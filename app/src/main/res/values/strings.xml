@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">XTE Miner</string>
+    <string name="start">Start mining</string>
+    <string name="stop">Stop</string>
+    <string name="pool_host">Pool host</string>
+    <string name="pool_port">Port</string>
+    <string name="wallet">Wallet address (XT…)</string>
+    <string name="password">Password / worker</string>
+    <string name="threads">CPU threads</string>
+    <string name="err_wallet">Enter a valid XTE wallet address before starting.</string>
+    <string name="status_fmt">Status: %1$s</string>
+    <string name="hashrate_fmt">Hashrate: %1$s  (total hashes: %2$d)</string>
+    <string name="shares_fmt">Shares — accepted: %1$d  rejected: %2$d</string>
+    <string name="disclaimer">Honest miner: no developer fee, no silent mining. Mining starts only when you tap Start.</string>
+</resources>

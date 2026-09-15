@@ -7,7 +7,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 class MiningEngine(
     private val statsListener: StatsListener
-) : StratumClient.Listener, ChukwaHasher.ShareListener {
+) : StratumClient.Listener, DaemonRpcClient.Listener, ChukwaHasher.ShareListener {
 
     interface StatsListener {
         fun onStats(
@@ -22,6 +22,7 @@ class MiningEngine(
 
     private val main = Handler(Looper.getMainLooper())
     private var stratum: StratumClient? = null
+    private var daemon: DaemonRpcClient? = null
     private var hasher: ChukwaHasher? = null
     private val accepted = AtomicLong(0)
     private val rejected = AtomicLong(0)
@@ -31,10 +32,19 @@ class MiningEngine(
     private var statusText = "Idle"
     private var ticker: Runnable? = null
     @Volatile private var mining = false
+    @Volatile private var mode: MiningMode = MiningMode.POOL
 
-    fun start(host: String, port: Int, wallet: String, password: String, threads: Int) {
+    fun start(
+        mode: MiningMode,
+        host: String,
+        port: Int,
+        wallet: String,
+        password: String,
+        threads: Int
+    ) {
         if (mining) return
         mining = true
+        this.mode = mode
         accepted.set(0)
         rejected.set(0)
         lastHashes = 0
@@ -42,13 +52,19 @@ class MiningEngine(
         hashrate = 0.0
         statusText = "Starting…"
         pushStats()
-        log("Starting miner: $host:$port threads=$threads")
+        val modeLabel = if (mode == MiningMode.SEEDNODE) "seednode" else "pool"
+        log("Starting miner ($modeLabel): $host:$port threads=$threads")
 
         hasher = ChukwaHasher(this)
         hasher!!.start(threads)
 
-        stratum = StratumClient(this)
-        stratum!!.connect(host, port, wallet, password)
+        if (mode == MiningMode.SEEDNODE) {
+            daemon = DaemonRpcClient(this)
+            daemon!!.connect(host, port, wallet)
+        } else {
+            stratum = StratumClient(this)
+            stratum!!.connect(host, port, wallet, password)
+        }
 
         val tick = object : Runnable {
             override fun run() {
@@ -77,6 +93,8 @@ class MiningEngine(
         hasher = null
         try { stratum?.disconnect() } catch (_: Exception) {}
         stratum = null
+        try { daemon?.disconnect() } catch (_: Exception) {}
+        daemon = null
         statusText = "Stopped"
         hashrate = 0.0
         pushStats()
@@ -85,11 +103,21 @@ class MiningEngine(
 
     fun isMining(): Boolean = mining
 
+    // --- Stratum + Daemon shared status/error ---
+
     override fun onStatus(status: String) {
         statusText = status
         pushStats()
         log(status)
     }
+
+    override fun onError(message: String) {
+        log(message)
+        statusText = message
+        pushStats()
+    }
+
+    // --- Stratum pool path ---
 
     override fun onJob(jobId: String, blobHex: String, targetHex: String, sessionId: String) {
         try {
@@ -116,17 +144,44 @@ class MiningEngine(
         log("Share rejected: $reason")
     }
 
-    override fun onError(message: String) {
-        log(message)
-        statusText = message
-        pushStats()
+    // --- Seednode daemon path ---
+
+    override fun onTemplate(jobId: String, blobHex: String, target64: Long, height: Long, difficulty: Long) {
+        try {
+            val blob = hexToBytes(blobHex)
+            hasher?.setJob(blob, jobId, target64)
+            log("New template h=$height diff=$difficulty tgt64=$target64 blob=${blob.size}B job=$jobId")
+            statusText = "Mining (solo h=$height)"
+            pushStats()
+        } catch (e: Exception) {
+            log("Bad template: ${e.message}")
+        }
     }
+
+    override fun onBlockAccepted() {
+        accepted.incrementAndGet()
+        pushStats()
+        log("Block accepted")
+    }
+
+    override fun onBlockRejected(reason: String) {
+        rejected.incrementAndGet()
+        pushStats()
+        log("Block rejected: $reason")
+    }
+
+    // --- Hasher share callback ---
 
     override fun onShareFound(jobId: String, nonce: Int, hash: ByteArray) {
         val nonceHex = String.format("%08x", nonce)
         val resultHex = bytesToHex(hash)
-        log("Share found nonce=$nonceHex")
-        stratum?.submit(jobId, nonceHex, resultHex)
+        if (mode == MiningMode.SEEDNODE) {
+            log("Block candidate nonce=$nonceHex")
+            daemon?.submitBlock(jobId, nonce)
+        } else {
+            log("Share found nonce=$nonceHex")
+            stratum?.submit(jobId, nonceHex, resultHex)
+        }
     }
 
     private fun pushStats() {

@@ -1,18 +1,27 @@
 package com.xtefoundation.cryptonoteminer
 
 import android.os.Bundle
+import android.view.View
 import android.widget.Button
 import android.widget.EditText
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.textfield.TextInputLayout
 
 class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
 
     private lateinit var prefs: MinerPrefs
     private lateinit var engine: MiningEngine
 
+    private lateinit var rgMode: RadioGroup
+    private lateinit var rbPool: RadioButton
+    private lateinit var rbSeednode: RadioButton
+    private lateinit var tilHost: TextInputLayout
+    private lateinit var tilPass: TextInputLayout
     private lateinit var etHost: EditText
     private lateinit var etPort: EditText
     private lateinit var etWallet: EditText
@@ -26,6 +35,7 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
     private lateinit var scrollLog: ScrollView
 
     private val logBuf = StringBuilder()
+    private var applyingMode = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -34,6 +44,11 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
         prefs = MinerPrefs(this)
         engine = MiningEngine(this)
 
+        rgMode = findViewById(R.id.rgMode)
+        rbPool = findViewById(R.id.rbPool)
+        rbSeednode = findViewById(R.id.rbSeednode)
+        tilHost = findViewById(R.id.tilHost)
+        tilPass = findViewById(R.id.tilPass)
         etHost = findViewById(R.id.etHost)
         etPort = findViewById(R.id.etPort)
         etWallet = findViewById(R.id.etWallet)
@@ -46,11 +61,26 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
         tvLog = findViewById(R.id.tvLog)
         scrollLog = findViewById(R.id.scrollLog)
 
-        etHost.setText(prefs.poolHost)
-        etPort.setText(prefs.poolPort.toString())
         etWallet.setText(prefs.wallet)
         etPass.setText(prefs.password)
         etThreads.setText(prefs.threads.toString())
+
+        applyingMode = true
+        if (prefs.mode == MiningMode.SEEDNODE) {
+            rbSeednode.isChecked = true
+        } else {
+            rbPool.isChecked = true
+        }
+        etHost.setText(prefs.poolHost)
+        etPort.setText(prefs.poolPort.toString())
+        applyModeUi(prefs.mode, fillPresets = false)
+        applyingMode = false
+
+        rgMode.setOnCheckedChangeListener { _, checkedId ->
+            if (applyingMode) return@setOnCheckedChangeListener
+            val mode = if (checkedId == R.id.rbSeednode) MiningMode.SEEDNODE else MiningMode.POOL
+            applyModeUi(mode, fillPresets = true)
+        }
 
         btnStartStop.setOnClickListener {
             if (engine.isMining()) {
@@ -64,33 +94,54 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
                     Toast.makeText(this, R.string.err_wallet, Toast.LENGTH_LONG).show()
                     return@setOnClickListener
                 }
-                val host = etHost.text.toString().trim().ifEmpty { MinerPrefs.DEFAULT_HOST }
-                val port = etPort.text.toString().toIntOrNull() ?: MinerPrefs.DEFAULT_PORT
+                val mode = currentMode()
+                val host = etHost.text.toString().trim()
+                    .ifEmpty { MinerPrefs.defaultHostFor(mode) }
+                val port = etPort.text.toString().toIntOrNull()
+                    ?: MinerPrefs.defaultPortFor(mode)
                 val pass = etPass.text.toString().ifEmpty { MinerPrefs.DEFAULT_PASS }
                 val threads = etThreads.text.toString().toIntOrNull()?.coerceIn(1, 16)
                     ?: Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
 
                 setFieldsEnabled(false)
                 btnStartStop.text = getString(R.string.stop)
-                engine.start(host, port, wallet, pass, threads)
+                engine.start(mode, host, port, wallet, pass, threads)
             }
         }
 
         onStats("Idle", 0.0, 0, 0, 0)
         onLog("XTE Miner ready. Enter XT… wallet and tap Start. No mining until you start.")
-        onLog("Algo: Chukwa (Argon2id t=3 m=512KiB p=1). Pool protocol: CN login/job/submit.")
-        onLog("Default pool: ${MinerPrefs.DEFAULT_HOST}:${MinerPrefs.DEFAULT_PORT}")
+        onLog("Algo: Chukwa (Argon2id t=3 m=512KiB p=1).")
+        onLog("Pool: ${MinerPrefs.DEFAULT_HOST}:${MinerPrefs.DEFAULT_PORT} (CN login/job/submit)")
+        onLog("Seednode: ${MinerPrefs.DEFAULT_SEED_HOST}:${MinerPrefs.DEFAULT_SEED_PORT} (daemon JSON-RPC)")
+    }
+
+    private fun currentMode(): MiningMode =
+        if (rbSeednode.isChecked) MiningMode.SEEDNODE else MiningMode.POOL
+
+    private fun applyModeUi(mode: MiningMode, fillPresets: Boolean) {
+        val seed = mode == MiningMode.SEEDNODE
+        tilPass.visibility = if (seed) View.GONE else View.VISIBLE
+        tilHost.hint = if (seed) getString(R.string.pool_host) + " (daemon)" else getString(R.string.pool_host)
+        if (fillPresets) {
+            etHost.setText(MinerPrefs.defaultHostFor(mode))
+            etPort.setText(MinerPrefs.defaultPortFor(mode).toString())
+        }
     }
 
     private fun savePrefs() {
+        prefs.mode = currentMode()
         prefs.poolHost = etHost.text.toString()
-        prefs.poolPort = etPort.text.toString().toIntOrNull() ?: MinerPrefs.DEFAULT_PORT
+        prefs.poolPort = etPort.text.toString().toIntOrNull()
+            ?: MinerPrefs.defaultPortFor(currentMode())
         prefs.wallet = etWallet.text.toString()
         prefs.password = etPass.text.toString()
         prefs.threads = etThreads.text.toString().toIntOrNull() ?: prefs.threads
     }
 
     private fun setFieldsEnabled(enabled: Boolean) {
+        rbPool.isEnabled = enabled
+        rbSeednode.isEnabled = enabled
         etHost.isEnabled = enabled
         etPort.isEnabled = enabled
         etWallet.isEnabled = enabled

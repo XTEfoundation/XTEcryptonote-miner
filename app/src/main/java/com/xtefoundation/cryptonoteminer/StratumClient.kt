@@ -40,7 +40,7 @@ class StratumClient(
     @Volatile var sessionId: String? = null
         private set
 
-    fun connect(host: String, port: Int, wallet: String, password: String, agent: String = "XTE-Miner/1.0.0") {
+    fun connect(host: String, port: Int, wallet: String, password: String, agent: String = "XTE-Miner/1.1.0") {
         disconnect()
         running.set(true)
         listener.onStatus("Connecting to $host:$port…")

@@ -19,7 +19,40 @@
             android:textSize="12sp"
             android:paddingBottom="12dp" />
 
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/mining_mode"
+            android:textColor="@color/text_dim"
+            android:textSize="13sp" />
+
+        <RadioGroup
+            android:id="@+id/rgMode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingTop="4dp"
+            android:paddingBottom="8dp">
+
+            <RadioButton
+                android:id="@+id/rbPool"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginEnd="24dp"
+                android:checked="true"
+                android:text="@string/mode_pool"
+                android:textColor="@color/text" />
+
+            <RadioButton
+                android:id="@+id/rbSeednode"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/mode_seednode"
+                android:textColor="@color/text" />
+        </RadioGroup>
+
         <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/tilHost"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:hint="@string/pool_host">
@@ -58,6 +91,7 @@
         </com.google.android.material.textfield.TextInputLayout>
 
         <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/tilPass"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:hint="@string/password"

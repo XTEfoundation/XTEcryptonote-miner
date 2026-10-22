@@ -68,7 +68,11 @@ object MinerValidation {
             val inner = host.substring(1, host.length - 1)
             return if (isIPv6(inner)) inner else null
         }
-        if (isIPv4(host) || HOSTNAME.matches(host)) return host
+        if (isIPv4(host)) return host
+        // Four numeric labels that are not a legal IPv4 address (for example 256.1.1.1)
+        // must not fall through to the hostname check.
+        if (host.count { it == '.' } == 3 && host.all { it.isDigit() || it == '.' }) return null
+        if (HOSTNAME.matches(host)) return host
         if (isIPv6(host)) return host
         return null
     }

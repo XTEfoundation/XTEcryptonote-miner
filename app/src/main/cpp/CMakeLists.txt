@@ -19,6 +19,7 @@ target_include_directories(argon2_ref PUBLIC
     ${ARGON2_DIR}/src
 )
 target_compile_definitions(argon2_ref PRIVATE ARGON2_NO_THREADS)
+target_compile_options(argon2_ref PRIVATE -fvisibility=hidden)
 
 add_library(xte_chukwa SHARED native-lib.cpp)
 target_include_directories(xte_chukwa PRIVATE
@@ -35,6 +36,7 @@ target_link_options(xte_chukwa PRIVATE
     -Wl,-z,relro
     -Wl,-z,now
     -Wl,-z,noexecstack
+    -Wl,--exclude-libs,ALL
 )
 set_target_properties(xte_chukwa PROPERTIES
     CXX_VISIBILITY_PRESET hidden

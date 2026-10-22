@@ -34,6 +34,7 @@ Pool port **9999** now uses TLS. That is the cryptonote-nodejs-pool SSL port (`d
 - Hash compare loads the first 8 hash bytes as an explicit little-endian `uint64` (same result as the previous `memcpy` on ARM).
 - Argon2id parameters are unchanged: t=3, m=512 KiB, p=1, salt = first 16 bytes, output 32 bytes.
 - Worker threads are capped at 16.
+- Argon2 symbols stay inside the library (`-fvisibility=hidden` and `--exclude-libs,ALL`). JNI entry points stay exported.
 
 ## Tests
 

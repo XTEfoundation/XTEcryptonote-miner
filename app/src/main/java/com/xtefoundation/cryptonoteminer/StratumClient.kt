@@ -23,9 +23,9 @@ import kotlin.concurrent.thread
  * Cryptonote-nodejs-pool stratum (login / job / submit / keepalived).
  * XTE pool at xte.trrxitte.com uses this CN login protocol (not Bitcoin subscribe).
  *
- * Port 9999 speaks TLS (pool `"ssl": true`). Other ports stay cleartext TCP.
- * There is no automatic reconnect loop: a dropped socket reports the error and waits
- * for an explicit Start.
+ * TLS is optional. The UI defaults it on for port 9999 (the pool's documented SSL
+ * port) and the user can turn it off. A dropped socket reconnects with backoff
+ * until Stop, or until the pool rejects the login.
  */
 class StratumClient(
     private val listener: Listener
@@ -36,16 +36,31 @@ class StratumClient(
         fun onShareAccepted()
         fun onShareRejected(reason: String)
         fun onError(message: String)
+        /** The socket is down and any current job must be dropped before reconnect. */
+        fun onConnectionLost()
     }
 
+    private data class Endpoint(
+        val host: String,
+        val port: Int,
+        val wallet: String,
+        val password: String,
+        val agent: String,
+        val useTls: Boolean
+    )
+
     private val running = AtomicBoolean(false)
+    private val wantConnection = AtomicBoolean(false)
+    private val reconnecting = AtomicBoolean(false)
     private val generation = AtomicInteger(0)
+    private val reconnectAttempt = AtomicInteger(0)
     private val reqId = AtomicInteger(1)
     private val ioLock = Any()
     private var socket: Socket? = null
     private var writer: BufferedWriter? = null
     private val pendingSubmits: MutableSet<Int> = Collections.synchronizedSet(HashSet())
     private val pendingLogins: MutableSet<Int> = Collections.synchronizedSet(HashSet())
+    @Volatile private var endpoint: Endpoint? = null
     @Volatile var sessionId: String? = null
         private set
 
@@ -69,59 +84,11 @@ class StratumClient(
             return
         }
 
+        endpoint = Endpoint(hostNorm, port, walletNorm, passNorm, agent, useTls)
+        wantConnection.set(true)
+        reconnectAttempt.set(0)
         val gen = openSession()
-        val tlsLabel = if (useTls) " TLS" else ""
-        listener.onStatus("Connecting to $hostNorm:$port$tlsLabel…")
-        thread(name = "stratum-connect", isDaemon = true) {
-            if (generation.get() != gen) return@thread
-            var opened: Socket? = null
-            try {
-                val s = openSocket(hostNorm, port, useTls)
-                opened = s
-                if (generation.get() != gen || !running.get()) {
-                    s.close()
-                    return@thread
-                }
-                synchronized(ioLock) {
-                    if (generation.get() != gen || !running.get()) {
-                        s.close()
-                        return@thread
-                    }
-                    socket = s
-                    writer = BufferedWriter(OutputStreamWriter(s.getOutputStream(), Charsets.UTF_8))
-                }
-                listener.onStatus(if (useTls) "Connected (TLS) — logging in…" else "Connected — logging in…")
-
-                thread(name = "stratum-reader", isDaemon = true) { readLoop(gen) }
-                thread(name = "stratum-keepalive", isDaemon = true) { keepaliveLoop(gen) }
-
-                val id = reqId.getAndIncrement()
-                pendingLogins.clear()
-                pendingLogins.add(id)
-                send(
-                    JSONObject()
-                        .put("id", id)
-                        .put("jsonrpc", "2.0")
-                        .put("method", "login")
-                        .put(
-                            "params",
-                            JSONObject()
-                                .put("login", walletNorm)
-                                .put("pass", passNorm)
-                                .put("agent", agent)
-                        )
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "connect failed: ${e.javaClass.simpleName}")
-                try { opened?.close() } catch (_: Exception) {}
-                if (generation.get() == gen) {
-                    listener.onError("Connect failed: ${safeIoMessage(e)}")
-                    listener.onStatus("Disconnected")
-                    running.set(false)
-                    closeQuietly()
-                }
-            }
-        }
+        beginConnect(gen)
     }
 
     fun submit(jobId: String, nonceHex: String, resultHex: String) {
@@ -160,6 +127,7 @@ class StratumClient(
     }
 
     fun disconnect() {
+        wantConnection.set(false)
         generation.incrementAndGet()
         running.set(false)
         pendingSubmits.clear()
@@ -167,6 +135,68 @@ class StratumClient(
         sessionId = null
         closeQuietly()
         listener.onStatus("Disconnected")
+    }
+
+    private fun beginConnect(gen: Int) {
+        val ep = endpoint ?: return
+        if (generation.get() != gen || !wantConnection.get()) return
+        val tlsLabel = if (ep.useTls) " TLS" else ""
+        listener.onStatus("Connecting to ${ep.host}:${ep.port}$tlsLabel…")
+        thread(name = "stratum-connect", isDaemon = true) {
+            if (generation.get() != gen || !wantConnection.get()) return@thread
+            var opened: Socket? = null
+            try {
+                val s = openSocket(ep.host, ep.port, ep.useTls)
+                opened = s
+                if (generation.get() != gen || !running.get() || !wantConnection.get()) {
+                    s.close()
+                    return@thread
+                }
+                synchronized(ioLock) {
+                    if (generation.get() != gen || !running.get() || !wantConnection.get()) {
+                        s.close()
+                        return@thread
+                    }
+                    socket = s
+                    writer = BufferedWriter(OutputStreamWriter(s.getOutputStream(), Charsets.UTF_8))
+                }
+                listener.onStatus(
+                    if (ep.useTls) "Connected (TLS) — logging in…" else "Connected — logging in…"
+                )
+
+                thread(name = "stratum-reader", isDaemon = true) { readLoop(gen) }
+                thread(name = "stratum-keepalive", isDaemon = true) { keepaliveLoop(gen) }
+
+                val id = reqId.getAndIncrement()
+                pendingLogins.clear()
+                pendingLogins.add(id)
+                send(
+                    JSONObject()
+                        .put("id", id)
+                        .put("jsonrpc", "2.0")
+                        .put("method", "login")
+                        .put(
+                            "params",
+                            JSONObject()
+                                .put("login", ep.wallet)
+                                .put("pass", ep.password)
+                                .put("agent", ep.agent)
+                        )
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "connect failed: ${e.javaClass.simpleName}")
+                try {
+                    opened?.close()
+                } catch (_: Exception) {
+                }
+                if (generation.get() == gen) {
+                    listener.onError("Connect failed: ${safeIoMessage(e)}")
+                    running.set(false)
+                    closeQuietly()
+                    if (!scheduleReconnect(gen)) listener.onStatus("Disconnected")
+                }
+            }
+        }
     }
 
     private fun openSession(): Int {
@@ -180,6 +210,32 @@ class StratumClient(
         return gen
     }
 
+    /**
+     * One reconnect per failed generation. Returns false when Stop was pressed
+     * or the login was rejected, so the caller can show Disconnected.
+     */
+    private fun scheduleReconnect(failedGen: Int): Boolean {
+        if (!wantConnection.get() || generation.get() != failedGen) return false
+        if (!reconnecting.compareAndSet(false, true)) return true
+        val attempt = reconnectAttempt.getAndIncrement()
+        val delay = reconnectDelayMs(attempt)
+        listener.onConnectionLost()
+        listener.onStatus("Reconnecting in ${delay / 1000}s…")
+        thread(name = "stratum-reconnect", isDaemon = true) {
+            try {
+                Thread.sleep(delay)
+            } catch (_: InterruptedException) {
+                reconnecting.set(false)
+                return@thread
+            }
+            reconnecting.set(false)
+            if (!wantConnection.get() || generation.get() != failedGen) return@thread
+            val newGen = openSession()
+            beginConnect(newGen)
+        }
+        return true
+    }
+
     private fun closeQuietly() {
         val w: BufferedWriter?
         val s: Socket?
@@ -189,8 +245,14 @@ class StratumClient(
             writer = null
             socket = null
         }
-        try { w?.close() } catch (_: Exception) {}
-        try { s?.close() } catch (_: Exception) {}
+        try {
+            w?.close()
+        } catch (_: Exception) {
+        }
+        try {
+            s?.close()
+        } catch (_: Exception) {
+        }
     }
 
     private fun send(obj: JSONObject) {
@@ -203,54 +265,59 @@ class StratumClient(
     }
 
     private fun readLoop(gen: Int) {
+        var lost = false
+        var lossReason = "Connection lost"
         try {
             val input = synchronized(ioLock) { socket?.getInputStream() } ?: return
             val reader = InputStreamReader(input, Charsets.UTF_8)
-            while (running.get() && generation.get() == gen) {
+            while (running.get() && generation.get() == gen && wantConnection.get()) {
                 val line = try {
                     BoundedReaders.readLine(reader, MinerValidation.MAX_STRATUM_LINE_CHARS)
                 } catch (e: SocketTimeoutException) {
-                    // Read timeout only unblocks the loop so a dead socket can be noticed
-                    // on the next keepalive write. Quiet pools are not disconnected.
-                    continue
+                    lost = true
+                    lossReason = "Read timed out"
+                    break
                 }
                 if (line == null) {
-                    if (running.get() && generation.get() == gen) {
-                        listener.onError("Connection lost")
-                        listener.onStatus("Disconnected")
-                    }
+                    lost = true
+                    lossReason = "Connection lost"
                     break
                 }
                 if (line.isBlank()) continue
                 if (generation.get() != gen) break
                 handleLine(line)
+                if (!wantConnection.get()) break
             }
         } catch (e: Exception) {
             if (running.get() && generation.get() == gen) {
                 Log.e(TAG, "read error: ${e.javaClass.simpleName}")
-                listener.onError(if (e.message?.startsWith("line exceeds") == true) {
+                lost = true
+                lossReason = if (e.message?.startsWith("line exceeds") == true) {
                     "Rejected oversized pool message"
                 } else {
                     "Connection lost"
-                })
-                listener.onStatus("Disconnected")
+                }
             }
         } finally {
             if (generation.get() == gen) {
                 running.set(false)
                 closeQuietly()
+                if (lost && wantConnection.get()) {
+                    listener.onError(lossReason)
+                    if (!scheduleReconnect(gen)) listener.onStatus("Disconnected")
+                }
             }
         }
     }
 
     private fun keepaliveLoop(gen: Int) {
-        while (running.get() && generation.get() == gen) {
+        while (running.get() && generation.get() == gen && wantConnection.get()) {
             try {
                 Thread.sleep(KEEPALIVE_MS)
             } catch (_: InterruptedException) {
                 break
             }
-            if (!running.get() || generation.get() != gen) break
+            if (!running.get() || generation.get() != gen || !wantConnection.get()) break
             val sid = sessionId ?: continue
             if (!MinerValidation.isSessionId(sid)) continue
             try {
@@ -262,12 +329,12 @@ class StratumClient(
                         .put("params", JSONObject().put("id", sid))
                 )
             } catch (e: Exception) {
-                if (running.get() && generation.get() == gen) {
+                if (running.get() && generation.get() == gen && wantConnection.get()) {
                     Log.e(TAG, "keepalive failed: ${e.javaClass.simpleName}")
                     listener.onError("Connection lost")
-                    listener.onStatus("Disconnected")
                     running.set(false)
                     closeQuietly()
+                    if (!scheduleReconnect(gen)) listener.onStatus("Disconnected")
                 }
                 break
             }
@@ -278,7 +345,9 @@ class StratumClient(
         try {
             val trimmed = line.trim()
             if (trimmed.length > MinerValidation.MAX_STRATUM_LINE_CHARS || !trimmed.startsWith("{")) {
-                Log.w(TAG, "rejected stratum line")
+                if (BuildConfig.DEBUG) {
+                    Log.w(TAG, "rejected stratum line len=${trimmed.length}")
+                }
                 return
             }
             val obj = JSONObject(trimmed)
@@ -300,6 +369,8 @@ class StratumClient(
             if (obj.has("error") && !obj.isNull("error")) {
                 val msg = errorText(obj.get("error"))
                 if (isLogin || sessionId == null) {
+                    // A rejected login is not a dead socket. Do not reconnect.
+                    wantConnection.set(false)
                     listener.onError("Login error: $msg")
                     listener.onStatus("Login failed")
                 } else if (isSubmit) {
@@ -315,11 +386,13 @@ class StratumClient(
             if (isLogin && result is JSONObject) {
                 val sid = result.optString("id", "").trim()
                 if (!MinerValidation.isSessionId(sid)) {
+                    wantConnection.set(false)
                     listener.onError("Login failed")
                     listener.onStatus("Login failed")
                     return
                 }
                 sessionId = sid
+                reconnectAttempt.set(0)
                 listener.onStatus("Authorized — mining")
                 val job = result.optJSONObject("job")
                 if (job != null) dispatchJob(job)
@@ -337,7 +410,9 @@ class StratumClient(
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "rejected stratum message (${e.javaClass.simpleName})")
+            if (BuildConfig.DEBUG) {
+                Log.w(TAG, "rejected stratum message (${e.javaClass.simpleName}) len=${line.length}")
+            }
         }
     }
 
@@ -359,9 +434,15 @@ class StratumClient(
     companion object {
         private const val TAG = "StratumClient"
         private const val CONNECT_TIMEOUT_MS = 15_000
-        private const val READ_TIMEOUT_MS = 30_000
+        private const val READ_TIMEOUT_MS = 120_000
         private const val KEEPALIVE_MS = 60_000L
         private const val MAX_IN_FLIGHT = 32
+
+        /** First retry waits 2s, then 4, 8, 16, then 30s. */
+        internal fun reconnectDelayMs(attempt: Int): Long {
+            val shift = attempt.coerceIn(0, 4)
+            return (2_000L shl shift).coerceAtMost(30_000L)
+        }
 
         private fun isHex(s: String, nbytes: Int): Boolean {
             if (s.length != nbytes * 2) return false
@@ -421,7 +502,10 @@ class StratumClient(
                 ssl.startHandshake()
                 return ssl
             } catch (e: Exception) {
-                try { plain.close() } catch (_: Exception) {}
+                try {
+                    plain.close()
+                } catch (_: Exception) {
+                }
                 throw e
             }
         }

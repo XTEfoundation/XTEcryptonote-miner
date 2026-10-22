@@ -83,6 +83,14 @@
                 android:textColor="@color/text" />
         </com.google.android.material.textfield.TextInputLayout>
 
+        <CheckBox
+            android:id="@+id/cbPoolTls"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/pool_tls"
+            android:textColor="@color/text" />
+
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -94,7 +102,7 @@
                 android:layout_height="wrap_content"
                 android:inputType="textVisiblePassword"
                 android:maxLines="1"
-                android:maxLength="128"
+                android:maxLength="192"
                 android:importantForAutofill="no"
                 android:textColor="@color/text" />
         </com.google.android.material.textfield.TextInputLayout>

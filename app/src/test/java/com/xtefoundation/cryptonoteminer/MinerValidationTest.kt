@@ -98,6 +98,67 @@ class MinerValidationTest {
     }
 
     @Test
+    fun peerCapsMatchReview() {
+        assertEquals(64 * 1024, MinerValidation.MAX_STRATUM_LINE_CHARS)
+        assertEquals(256 * 1024, MinerValidation.MAX_RPC_BYTES)
+        assertEquals(512, MinerValidation.MAX_JOB_BLOB_BYTES)
+        assertEquals(4096, MinerValidation.MAX_HASH_BLOB_BYTES)
+        assertEquals(43, MinerValidation.MIN_BLOB_BYTES)
+        assertNull(
+            MinerValidation.validateBlobHex(
+                "ab".repeat(MinerValidation.MAX_JOB_BLOB_BYTES),
+                MinerValidation.MAX_JOB_BLOB_BYTES
+            )
+        )
+    }
+
+    @Test
+    fun reconnectBackoffCapsAtThirtySeconds() {
+        assertEquals(2_000L, StratumClient.reconnectDelayMs(0))
+        assertEquals(4_000L, StratumClient.reconnectDelayMs(1))
+        assertEquals(8_000L, StratumClient.reconnectDelayMs(2))
+        assertEquals(16_000L, StratumClient.reconnectDelayMs(3))
+        assertEquals(30_000L, StratumClient.reconnectDelayMs(4))
+        assertEquals(30_000L, StratumClient.reconnectDelayMs(10))
+    }
+
+    @Test
+    fun cleartextRpcRejectsRedirectsChunksAndOversize() {
+        val ok = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".toByteArray(Charsets.ISO_8859_1)
+        val parsed = CleartextJsonRpc.parseResponse(ok, 256)
+        assertEquals(200, parsed.code)
+        assertEquals("{}", CleartextJsonRpc.bodyOrThrow(parsed).toString(Charsets.UTF_8))
+
+        val redirect = "HTTP/1.1 302 Found\r\nContent-Length: 0\r\nLocation: http://evil/json_rpc\r\n\r\n"
+            .toByteArray(Charsets.ISO_8859_1)
+        val bounced = CleartextJsonRpc.parseResponse(redirect, 256)
+        assertEquals(302, bounced.code)
+        try {
+            CleartextJsonRpc.bodyOrThrow(bounced)
+            throw AssertionError("expected redirect refusal")
+        } catch (e: IOException) {
+            assertTrue(e.message!!.contains("redirect"))
+        }
+
+        val chunked = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+            .toByteArray(Charsets.ISO_8859_1)
+        try {
+            CleartextJsonRpc.parseResponse(chunked, 256)
+            throw AssertionError("expected chunked refusal")
+        } catch (e: IOException) {
+            assertTrue(e.message!!.contains("chunked"))
+        }
+
+        val huge = "HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n".toByteArray(Charsets.ISO_8859_1)
+        try {
+            CleartextJsonRpc.parseResponse(huge, 16)
+            throw AssertionError("expected size refusal")
+        } catch (e: IOException) {
+            assertTrue(e.message!!.contains("too large"))
+        }
+    }
+
+    @Test
     fun blobAndTargetBounds() {
         val blob = "ab".repeat(MinerValidation.MIN_BLOB_BYTES)
         assertNull(MinerValidation.validateBlobHex(blob, MinerValidation.MAX_JOB_BLOB_BYTES))

@@ -1,47 +1,81 @@
 # Security review
 
-Hardening pass on the XTE Chukwa miner (Kotlin UI, stratum and daemon clients, NDK Argon2id). Mining behavior is unchanged: explicit Start/Stop, no developer fee, pool default `xte.trrxitte.com:3333`, seednode default `eu-east.trrxitte.com:14485`.
+Hardening of the XTE Chukwa miner (Kotlin UI, stratum and daemon clients, NDK Argon2id). Pool and seednode modes, explicit Start/Stop, and no developer fee are unchanged. Defaults stay `xte.trrxitte.com:3333` and `eu-east.trrxitte.com:14485`.
 
-Pool port **9999** now uses TLS. That is the cryptonote-nodejs-pool SSL port (`desc: "SSL connection"`). Ports 3333, 4444, 5555, and 7777 stay cleartext TCP. Seednode RPC stays `http://` because the daemon endpoint is HTTP.
+A separate review of `main` at `34d9508` (model grok-build-0.1, then checked by hand against that tree) is cross-checked below. Severities are that review's. Each item was re-checked in this tree before the fix.
 
-## Findings
+## Review cross-check
 
-| Sev | Issue | Fix |
-| --- | --- | --- |
-| High | Stratum `readLine()` and daemon `readText()` had no size limit. A hostile pool or daemon could exhaust memory. | Stratum lines capped at 32 KiB. RPC bodies capped at 2 MiB. Oversized input is rejected and the socket or request is dropped. |
-| High | `hexToBytes` accepted non-hex (`Character.digit` returns -1) and padded odd lengths, so a bad job was hashed anyway. | Even length, hex alphabet, and size are required. Stratum hashing blobs must be 43–1024 bytes. Block templates must be 43 bytes–512 KiB. |
-| High | Native `nativeSetJob` / `nativeHashOnce` trusted the Java array length. A null array, a pending JNI exception, or a multi-megabyte blob could crash or pin memory. Nonce writes assume offset 39. | Reject blobs shorter than 43 or longer than 512 KiB before allocation. Null-check JNI arrays and strings. Cap job ids at 128 bytes of `[A-Za-z0-9._:-]`. |
-| High | Worker threads called `CallVoidMethod` without clearing exceptions or bounding local refs. A throwing share callback could abort the VM on the next JNI call. `clearJob` did not stop an in-flight blob copy, so workers kept hashing and submitting the previous job. | `PushLocalFrame` / `ExceptionClear`. An empty or zero-target job clears the worker’s local blob. Start/stop take one lock and join workers before swapping the callback global ref, so the callback is not deleted while a worker runs. |
-| Medium | Port 9999 was opened as cleartext. The pool software treats that port as SSL, so the wallet login had no server authentication. | TLS 1.2+ only, platform trust store, HTTPS hostname check, SNI via `createSocket(socket, host, port, true)`. Ciphers with `NULL`, `ANON`, `EXPORT`, `RC4`, `DES`, or `MD5` are dropped. |
-| Medium | Stratum read timeout was infinite. A keepalive write failure left the reader blocked. `connect()`’s `disconnect()` could let the old reader’s `finally` clear the new session’s `running` flag. | 15s connect timeout, 30s read timeout (timeouts do not drop a quiet pool). Keepalive failure closes the socket. A generation counter ignores stale threads. There is still **no** reconnect loop; Start remains explicit. |
-| Medium | Daemon `HttpURLConnection` followed redirects and put response snippets in errors and logcat. A redirect or error body could echo the wallet. | Redirects off, caches off, status code only on HTTP failure, wallet redacted, bodies not logged. |
-| Medium | Login results were accepted when `result` merely contained `id` and `job`, even if the id was not the pending login. Raw stratum lines were written to logcat. | Session id is set only for the outstanding login id, and only if it matches the token charset. Rejected lines are logged by type and length, not payload. |
-| Medium | Wallet and pool password could reach logcat or the on-screen log through pool or daemon error text. | Log and UI lines pass through a redactor. The active wallet, a long password, and any `XT…` address-shaped token are masked. Payloads are not logged. |
-| Low | `usesCleartextTraffic="true"` with no network security config. User-added CAs would have been trusted for any TLS the app added later. | `network_security_config`: cleartext stays on because seednode RPC is HTTP; trust anchors are **system CAs only**. Stratum TLS builds its `SSLContext` from that default trust manager. |
-| Low | `WAKE_LOCK`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE`, and `ACCESS_NETWORK_STATE` were declared and unused. | Removed. Only `INTERNET` remains. The launcher activity stays `exported` (required). No other components. |
-| Low | `allowBackup` was already false, but there was no backup or device-transfer exclude for `xte_miner.xml` (wallet and pool password). | `allowBackup="false"` kept. `backup_rules` and `data_extraction_rules` exclude that prefs file. Autofill is disabled on host, port, wallet, password, and threads. |
-| Low | Release builds shipped with R8 off. | `isMinifyEnabled` and `isShrinkResources` for release. ProGuard keeps `ChukwaHasher` native methods and `onNativeShareFound` (JNI looks it up by name). `@Keep` is also on that class. |
-| Low | Wallet check was `length < 10`. A bad port fell through to the default. Threads were clamped only in the setter. | Addresses must start with `XT`, use the CryptoNote base58 alphabet, and be 95, 97, 106, or 108 characters (the published traaitt address is 97). Optional pool suffixes: `+` payment id (16–64 hex) and `.` fixed difficulty. Host is an ASCII DNS name or an IP. Port is 1–65535. Threads are 1–16. Pool password is 1–128 printable characters. Empty host/port/threads still fall back to the mode defaults. |
-| Low | Gradle wrapper zip had no checksum. | `distributionSha256Sum` for `gradle-8.2.1-all.zip` (`7c3ad722e9b0ce8205b91560fd6ce8296ac3eadf065672242fd73c06b8eeb6ee` from gradle.org). The committed `gradle-wrapper.jar` matches the published 8.2.1 wrapper jar SHA-256 `a8451eeda314d0568b5340498b36edf147a8f0d692c5ff58082d477abe9146e4`. |
-| Info | Signing material. | No keystore, pem, or env file is tracked. Release signing still reads `KEYSTORE_*` env vars, `/workspace/secrets/xte-keystore.env`, or gitignored `keystore.properties`. `.gitignore` now also covers `*.pem`, `*.p12`, `*.key`, and `*.env`. `keystore.properties.example` contains only placeholders. |
-| Info | Dependency versions. | App and plugin versions are already pinned (no `+` or `latest`). They were not bumped in this pass; a major Android Gradle Plugin jump is unrelated to the issues above. |
-| Info | Daemon poll loop. | The 4s `getblocktemplate` poll is intentional while Start is active. The wait is floored at 1s so it cannot spin. It is not a reconnect storm. |
-| Info | Pool password at rest. | Stored in `MODE_PRIVATE` prefs, backup disabled, not logged. It is a worker name (default `x`), not the wallet spend key. It is not encrypted, to avoid a new crypto dependency for that value. |
+| ID | Sev | Held? | What changed |
+| --- | --- | --- | --- |
+| F1 | Medium | Yes | Optional pool TLS (checkbox, default on for port 9999). Network security config denies cleartext except `trrxitte.com` (and subdomains) and `localhost`. A daemon on any other configured host is reached by a direct HTTP/1.1 socket that only POSTs `/json_rpc` and refuses redirects and chunked bodies. |
+| F2 | Medium | Yes | Stratum lines cap at 64 KiB. HTTP bodies cap at 256 KiB. Stratum blobs must be 43–512 bytes. The native hasher rejects blobs shorter than 43 or longer than 4096. Block templates larger than 100000 bytes are rejected while parsing and are not hashed. |
+| F3 | Low | Yes | `hexToBytes` requires even length and `[0-9a-fA-F]`. Odd or non-hex input throws. |
+| F4 | Low | Yes | Stratum `soTimeout` is 120s (above the 60s keepalive). A read timeout closes the socket and reconnects with backoff (2s, 4s, 8s, 16s, then 30s) until Stop. A rejected login does not reconnect. |
+| F5 | Low | Yes | JNI `New*` / `Get*` / `CallVoidMethod` check null and pending exceptions, push a local frame, and `ExceptionClear` after the share callback. Exceptions are not described to logcat, because `ExceptionDescribe` can print peer data. |
+| F6 | Low | Yes | `nativeStop` joins the workers, then `DeleteGlobalRef` on the callback. The next Start constructs a new hasher, which takes a new global ref. |
+| F7 | Low | Yes | `distributionSha256Sum=7c3ad722e9b0ce8205b91560fd6ce8296ac3eadf065672242fd73c06b8eeb6ee` for `gradle-8.2.1-all.zip`. The committed wrapper jar matches the published 8.2.1 SHA-256 `a8451eeda314d0568b5340498b36edf147a8f0d692c5ff58082d477abe9146e4`. |
+| F8 | Info | Yes | Pool payloads are not logged. A rejected line logs its length only in debug builds. |
+| F9 | Info | Yes | Wallet must start with `XT`, use the CryptoNote base58 alphabet, and be 95, 97, 106, or 108 characters, plus optional `+` payment id and `.` fixed difficulty. Host is a hostname or IP (dotted quads that are not IPv4 are rejected). Port is 1–65535. Threads are 1–16. The wallet field accepts up to 192 characters so the suffix forms fit. |
+| F10 | Info | Yes | Only `INTERNET` remains. The unused foreground-service and wake-lock permissions are gone. |
+| F11 | Info | Yes | Release has R8 and resource shrinking. Native methods and `onNativeShareFound` are kept. |
+| F12 | Info | Yes | `statusText`, `hashrate`, `stratum`, `daemon`, and `hasher` are `@Volatile`. `stop()` still joins workers before it drops the clients. The review's note that "share found after stop" was a false positive still holds. |
 
-## Native limits (kept in sync with `MinerValidation`)
+No Critical or High issues were confirmed. An earlier pass in this branch rated some of the same bugs High; the hand-checked review's Medium/Low scale is the one used here.
 
-- Nonce is 4 bytes little-endian at offset **39**. Blobs shorter than 43 bytes are refused.
-- Hash compare loads the first 8 hash bytes as an explicit little-endian `uint64` (same result as the previous `memcpy` on ARM).
+## F1 detail
+
+Port 9999 is the cryptonote-nodejs-pool SSL port in the pool README template. A checked-in pool `config.json` has been seen with that port's `ssl` flag false, and this environment could not complete a live handshake to `xte.trrxitte.com:9999`, so TLS is optional. The box starts checked when the port is 9999 and the user has not chosen yet. Unchecking it speaks cleartext to that same configured host. TLS is 1.2 or 1.3, system trust anchors only, HTTPS endpoint identification, SNI, and ciphers containing `NULL`, `ANON`, `EXPORT`, `RC4`, `DES`, or `MD5` are dropped.
+
+The network security config cannot list an IP address or a host the user types at runtime. `HttpURLConnection` therefore follows the allowlist. `DaemonRpcClient` uses it when `NetworkSecurityPolicy.isCleartextTrafficPermitted(host)` is true. Otherwise it opens a socket only to the already-validated host and port, writes a single `POST /json_rpc`, and parses the response itself. That parser rejects 3xx responses, `Transfer-Encoding: chunked`, and bodies over 256 KiB.
+
+Stratum cleartext is already a raw socket to the host the user entered. It is not governed by the HTTP cleartext flag.
+
+## Solo hashing blob (checked against traaitt)
+
+The earlier note that seednode mode might hash the wrong bytes was checked against TRRXITTE/traaitt `master` (`RpcServer.cpp`, `BlockUtilities.cpp`, `CryptoNoteSerialization.cpp`, `hash.h`, `CryptoNoteConfig.h`). It is a real mismatch, not just a guess.
+
+`RpcServer::on_getblocktemplate` sets `blocktemplate_blob` to the hex of the full `BlockTemplate`. There is no `blockhashing_blob`. `on_submitblock` expects that same full blob.
+
+`getBlockLongHash` does not hash that blob. For `majorVersion != 1` (Chukwa is `BLOCK_MAJOR_VERSION_6`) it hashes `getParentBlockHashingBinaryArray(block, headerOnly=true)`:
+
+- parent major and minor (`uint8`)
+- timestamp (varint)
+- parent previous-block id (32 bytes)
+- nonce (`uint32`, raw)
+- merkle root (32 bytes)
+- transaction count (varint)
+- then stop
+
+The merkle root is `tree_hash_from_branch` of the parent miner-tx hash. `tree_depth(1) == 0`, so with a single miner transaction the root equals `getBaseTransactionHash`. For `TRANSACTION_VERSION_1` (current) that hash is `cn_fast_hash` (Keccak) of the miner transaction, not NIST SHA-3. `chukwa_slow_hash` then runs Argon2id (t=3, m=512 KiB, p=1) over that parent blob, with the salt equal to its first 16 bytes.
+
+A v6 block header on the wire is major, minor, and previous id (34 bytes). The parent block follows. The nonce sits at about offset 73 of the full template when the timestamp varint is 5 bytes (34 + parent major + parent minor + 5 + 32). Offset 39 is the nonce offset **inside the parent hashing blob** for that same 5-byte timestamp, which is what the pool's stratum `blob` already is. Pool mode is unchanged.
+
+This build does not construct that parent blob. Doing it correctly needs a tested Keccak and a slice of the miner transaction out of the template. An untested builder would submit blocks the node rejects, and the old path (hash the raw template, write the nonce at offset 39, `submitblock`) does that too. Seednode mode still connects and polls `getblocktemplate` so height and difficulty show up. It does not start the hasher and it does not call `submitblock`.
+
+## Other controls
+
+- Login session ids are accepted only for the outstanding login id and only if they match `[A-Za-z0-9._:-]{1,128}`. In-flight submits are capped at 32.
+- Log and on-screen lines pass through a redactor. The active wallet, a long password, and `XT…` address-shaped tokens are masked.
+- `allowBackup` is false. Backup and device-transfer rules exclude `xte_miner.xml`. Autofill is off on the form fields.
+- No keystore, pem, or env file is tracked. Release signing reads `KEYSTORE_*`, `/workspace/secrets/xte-keystore.env`, or gitignored `keystore.properties`.
+- App and plugin versions are pinned. They were not bumped in this pass.
+
+## Native limits
+
+- Nonce is 4 bytes little-endian at offset 39 of the **hashing** blob.
+- Hash compare loads the first 8 hash bytes as an explicit little-endian `uint64`.
 - Argon2id parameters are unchanged: t=3, m=512 KiB, p=1, salt = first 16 bytes, output 32 bytes.
 - Worker threads are capped at 16.
 - Argon2 symbols stay inside the library (`-fvisibility=hidden` and `--exclude-libs,ALL`). JNI entry points stay exported.
 
 ## Tests
 
-`app/src/test/java/com/xtefoundation/cryptonoteminer/MinerValidationTest.kt` covers address, host, port, thread, and password checks, TLS-port selection, blob and target bounds, the xmrig target and difficulty conversions, hex rejection, redaction, and the capped readers.
+`MinerValidationTest` covers the address, host, port, thread, and password checks, the TLS-port default, blob and target bounds, the 64 KiB / 256 KiB / 512 / 4096 caps, reconnect delays, the cleartext HTTP parser (redirect, chunked, oversize), the xmrig target and difficulty conversions, hex rejection, redaction, and the capped readers.
 
 ## Residual risk
 
-- Cleartext stratum on the non-TLS pool ports is what the pool expects. Anyone on the path can see the wallet address (it is a public mining login) and the worker name.
-- Seednode HTTP is unauthenticated. Point it at a daemon you trust. Templates larger than 512 KiB are rejected.
-- A pool can still set an easy target. Chukwa is slow enough that share traffic stays small; in-flight submits are capped at 32.
+- Cleartext stratum on ports other than a TLS session is what those pool ports expect. Anyone on the path can see the wallet address (a public mining login) and the worker name, and can still substitute a job if TLS is off.
+- Seednode HTTP is unauthenticated. Point it at a daemon you trust. The direct-socket path exists so a daemon that is not on the cleartext allowlist still works; it does not follow redirects.
+- Solo mode does not currently find blocks. Use pool mode to mine.
+- The pool password is stored in `MODE_PRIVATE` prefs. It is not encrypted. It is a worker name (default `x`), not the spend key, and backup is off.

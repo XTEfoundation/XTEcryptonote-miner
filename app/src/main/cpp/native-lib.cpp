@@ -17,7 +17,7 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 
 // Chukwa = Argon2id: t=3, m=512 KiB, p=1, salt=first 16 bytes of input, out=32.
-// Blob limits match MinerValidation (nonce at offset 39, templates capped at 512 KiB).
+// Blob limits match MinerValidation.MAX_HASH_BLOB_BYTES (nonce at offset 39).
 static constexpr uint32_t CHUKWA_T_COST = 3;
 static constexpr uint32_t CHUKWA_M_COST = 512; // KiB
 static constexpr uint32_t CHUKWA_PARALLELISM = 1;
@@ -25,7 +25,7 @@ static constexpr size_t CHUKWA_SALT_LEN = 16;
 static constexpr size_t CHUKWA_HASH_LEN = 32;
 static constexpr size_t NONCE_OFFSET = 39;
 static constexpr size_t MIN_BLOB = NONCE_OFFSET + 4;
-static constexpr size_t MAX_BLOB = 512 * 1024;
+static constexpr size_t MAX_BLOB = 4096;
 static constexpr size_t MAX_JOB_ID = 128;
 
 struct WorkerState {
@@ -342,9 +342,14 @@ Java_com_xtefoundation_cryptonoteminer_ChukwaHasher_nativeStart(
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_xtefoundation_cryptonoteminer_ChukwaHasher_nativeStop(
-        JNIEnv * /*env*/, jobject /*thiz*/) {
+        JNIEnv *env, jobject /*thiz*/) {
     std::lock_guard<std::mutex> life(g_life_mutex);
     join_workers_locked();
+    // Workers are joined, so notify_share cannot still be inside CallVoidMethod.
+    if (env != nullptr && g_state.callback != nullptr) {
+        env->DeleteGlobalRef(g_state.callback);
+        g_state.callback = nullptr;
+    }
     LOGI("Mining threads stopped");
 }
 

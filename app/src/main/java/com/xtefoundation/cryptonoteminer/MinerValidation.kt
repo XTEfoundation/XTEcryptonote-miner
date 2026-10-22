@@ -7,13 +7,22 @@ package com.xtefoundation.cryptonoteminer
 object MinerValidation {
     const val NONCE_OFFSET = 39
     const val MIN_BLOB_BYTES = NONCE_OFFSET + 4
-    /** Stratum hashing blob. Real Chukwa jobs are ~76–256 bytes. */
-    const val MAX_JOB_BLOB_BYTES = 1024
-    /** Solo blocktemplate_blob cap. Stops a hostile daemon from forcing a multi-megabyte Argon2 input. */
-    const val MAX_BLOCK_BLOB_BYTES = 512 * 1024
+    /**
+     * Stratum job blob. The pool sends the hashing blob (~76 bytes when the timestamp
+     * varint is 5 bytes). 43 is the smallest buffer that can hold the nonce; 512 is
+     * the peer cap from the hand-checked review.
+     */
+    const val MAX_JOB_BLOB_BYTES = 512
+    /** Native hasher cap. Must match `MAX_BLOB` in native-lib.cpp. */
+    const val MAX_HASH_BLOB_BYTES = 4096
+    /**
+     * Largest blocktemplate_blob accepted while parsing a seednode response.
+     * The hex form plus JSON must fit in [MAX_RPC_BYTES]. It is not passed to the hasher.
+     */
+    const val MAX_BLOCK_BLOB_BYTES = 100_000
     const val HASH_BYTES = 32
-    const val MAX_STRATUM_LINE_CHARS = 32_768
-    const val MAX_RPC_BYTES = 2 * 1024 * 1024
+    const val MAX_STRATUM_LINE_CHARS = 64 * 1024
+    const val MAX_RPC_BYTES = 256 * 1024
     const val POOL_TLS_PORT = 9999
 
     const val ERR_WALLET = "Enter a valid XTE wallet address (starts with XT)."
@@ -51,7 +60,11 @@ object MinerValidation {
 
     fun isSessionId(id: String): Boolean = JOB_ID.matches(id)
 
-    /** Port 9999 is the cryptonote-nodejs-pool SSL port. Other ports stay cleartext. */
+    /**
+     * Default only. Port 9999 is the pool's documented SSL port, so the checkbox
+     * starts checked. The user can turn TLS off; some pool configs ship that port
+     * with `"ssl": false`.
+     */
     fun stratumUsesTls(port: Int): Boolean = port == POOL_TLS_PORT
 
     /**

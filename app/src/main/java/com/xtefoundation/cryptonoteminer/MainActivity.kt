@@ -1,8 +1,11 @@
 package com.xtefoundation.cryptonoteminer
 
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.View
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.RadioButton
 import android.widget.RadioGroup
@@ -27,6 +30,7 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
     private lateinit var etWallet: EditText
     private lateinit var etPass: EditText
     private lateinit var etThreads: EditText
+    private lateinit var cbPoolTls: CheckBox
     private lateinit var btnStartStop: Button
     private lateinit var tvStatus: TextView
     private lateinit var tvHashrate: TextView
@@ -36,6 +40,8 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
 
     private val logBuf = StringBuilder()
     private var applyingMode = false
+    private var tlsUserSet = false
+    private var suppressTls = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,6 +60,7 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
         etWallet = findViewById(R.id.etWallet)
         etPass = findViewById(R.id.etPass)
         etThreads = findViewById(R.id.etThreads)
+        cbPoolTls = findViewById(R.id.cbPoolTls)
         btnStartStop = findViewById(R.id.btnStartStop)
         tvStatus = findViewById(R.id.tvStatus)
         tvHashrate = findViewById(R.id.tvHashrate)
@@ -73,8 +80,30 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
         }
         etHost.setText(prefs.poolHost)
         etPort.setText(prefs.poolPort.toString())
+        suppressTls = true
+        tlsUserSet = prefs.isPoolTlsSet()
+        cbPoolTls.isChecked = if (tlsUserSet) {
+            prefs.poolTls
+        } else {
+            prefs.poolPort == MinerValidation.POOL_TLS_PORT
+        }
+        suppressTls = false
         applyModeUi(prefs.mode, fillPresets = false)
         applyingMode = false
+
+        cbPoolTls.setOnCheckedChangeListener { _, _ ->
+            if (!suppressTls) tlsUserSet = true
+        }
+        etPort.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                if (tlsUserSet || suppressTls) return
+                suppressTls = true
+                cbPoolTls.isChecked = s?.toString()?.trim()?.toIntOrNull() == MinerValidation.POOL_TLS_PORT
+                suppressTls = false
+            }
+        })
 
         rgMode.setOnCheckedChangeListener { _, checkedId ->
             if (applyingMode) return@setOnCheckedChangeListener
@@ -126,10 +155,12 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
                 prefs.wallet = wallet
                 prefs.password = etPass.text.toString()
                 prefs.threads = threads
+                val useTls = mode == MiningMode.POOL && cbPoolTls.isChecked
+                if (mode == MiningMode.POOL) prefs.poolTls = useTls
 
                 setFieldsEnabled(false)
                 btnStartStop.text = getString(R.string.stop)
-                val started = engine.start(mode, host, port, wallet, pass, threads)
+                val started = engine.start(mode, host, port, wallet, pass, threads, useTls)
                 if (!started) {
                     setFieldsEnabled(true)
                     btnStartStop.text = getString(R.string.start)
@@ -141,7 +172,8 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
         onLog("XTE Miner ready. Enter XT… wallet and tap Start. No mining until you start.")
         onLog("Algo: Chukwa (Argon2id t=3 m=512KiB p=1).")
         onLog("Pool: ${MinerPrefs.DEFAULT_HOST}:${MinerPrefs.DEFAULT_PORT} (CN login/job/submit)")
-        onLog("Seednode: ${MinerPrefs.DEFAULT_SEED_HOST}:${MinerPrefs.DEFAULT_SEED_PORT} (daemon JSON-RPC)")
+        onLog("Pool TLS is optional. Port ${MinerValidation.POOL_TLS_PORT} starts with the TLS box checked.")
+        onLog("Seednode: ${MinerPrefs.DEFAULT_SEED_HOST}:${MinerPrefs.DEFAULT_SEED_PORT} (daemon JSON-RPC, height only)")
     }
 
     private fun currentMode(): MiningMode =
@@ -150,6 +182,7 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
     private fun applyModeUi(mode: MiningMode, fillPresets: Boolean) {
         val seed = mode == MiningMode.SEEDNODE
         tilPass.visibility = if (seed) View.GONE else View.VISIBLE
+        cbPoolTls.visibility = if (seed) View.GONE else View.VISIBLE
         tilHost.hint = if (seed) getString(R.string.pool_host) + " (daemon)" else getString(R.string.pool_host)
         if (fillPresets) {
             etHost.setText(MinerPrefs.defaultHostFor(mode))
@@ -165,6 +198,7 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
         etWallet.isEnabled = enabled
         etPass.isEnabled = enabled
         etThreads.isEnabled = enabled
+        cbPoolTls.isEnabled = enabled
     }
 
     override fun onStats(status: String, hashrate: Double, accepted: Long, rejected: Long, hashes: Long) {

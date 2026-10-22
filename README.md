@@ -13,11 +13,13 @@ Android CPU miner for **traaitt [XTE]** (Cryptonote) using **Chukwa** (Argon2id)
 | Setting | Default |
 |--------|---------|
 | Host | `xte.trrxitte.com` |
-| Port | `3333` (also 4444 / 5555 / 7777). `9999` is TLS |
+| Port | `3333` (also 4444 / 5555 / 7777). `9999` offers TLS |
 | Algo | `chukwa` |
 | Password | `x` (or your worker name) |
 
-Port **9999** is the pool’s TLS port. The app speaks TLS there (hostname checked, TLS 1.2 or 1.3). The other pool ports stay cleartext TCP, which is what the pool expects. Seednode RPC stays `http://` because the daemon JSON-RPC endpoint is HTTP.
+Port **9999** is the pool’s documented TLS port. The TLS checkbox starts checked for that port and can be turned off (some pool configs serve it as cleartext). TLS checks the hostname and uses TLS 1.2 or 1.3. The other pool ports stay cleartext TCP. A dropped pool socket reconnects with backoff until you tap Stop. A rejected login does not reconnect.
+
+Seednode RPC stays `http://`. Cleartext HTTP from the platform stack is limited to `trrxitte.com` (and subdomains) and `localhost`. Any other daemon host you enter is contacted directly, with no redirects.
 
 Sites: [traaitt.com](https://traaitt.com) · [mine.traaitt.com](https://mine.traaitt.com) · [explorer.traaitt.com](https://explorer.traaitt.com)
 
@@ -35,11 +37,11 @@ Solo mining talks to an XTEnetwork daemon RPC (not stratum):
 
 1. Poll `getblocktemplate` with `{ "reserve_size": 8, "wallet_address": "<XT…>" }`
 2. Response: `difficulty`, `height`, `reserved_offset`, `blocktemplate_blob`, `status`
-3. Convert difficulty → 64-bit target: `target64 = (2^64 − 1) / difficulty` (unsigned), same semantics as xmrig `Job::setDiff`
-4. Mine Chukwa on the blob; nonce at Cryptonote offset **39** (4 bytes LE)
-5. On candidate: write nonce into the blob and `submitblock` with params `["<hex>"]` (vector of one string)
+3. The app shows height and difficulty. It does **not** hash `blocktemplate_blob` or call `submitblock`.
 
-If the seednode host does not resolve or the daemon is unreachable, the app logs a clear DNS/RPC error and stays idle (no silent mining).
+traaitt hashes a parent-block hashing blob (Chukwa / Argon2id), and the nonce lives at offset 39 of **that** blob, not of the raw template. Pool jobs already carry the hashing blob. Building it from a solo template needs a tested Keccak of the miner transaction, which this app does not ship. Details are in [`SECURITY.md`](SECURITY.md). Use pool mode to mine.
+
+If the seednode host does not resolve or the daemon is unreachable, the app logs a DNS/RPC error and stays idle (no silent mining).
 
 ## Mining architecture
 
@@ -55,14 +57,14 @@ If the seednode host does not resolve or the daemon is unreachable, the app logs
 ### Seednode mode
 
 1. **Daemon JSON-RPC** over HTTP (`/json_rpc`) as above.
-2. Templates are refreshed every few seconds and whenever height/blob changes.
+2. Height and difficulty refresh every few seconds. The hasher is not started.
 
 ### Hash (both modes)
 
 - Argon2id **Chukwa** via NDK + [phc-winner-argon2](https://github.com/P-H-C/phc-winner-argon2)
 - `t_cost=3`, `m_cost=512` (KiB), `parallelism=1`
 - password = full hashing blob; salt = first **16** bytes of blob; output **32** bytes
-- nonce written at blob offset **39** (4 bytes LE)
+- nonce written at hashing-blob offset **39** (4 bytes LE). That matches pool jobs. It is not the offset of the nonce inside a raw v6 `blocktemplate_blob`.
 - Multi-threaded native workers; UI shows hashrate, accepted/rejected, status.
 
 > Note: Pool mode is **not** Bitcoin `mining.subscribe` stratum. XTE’s pool software uses the Cryptonote login protocol (same family as [TRRXITTE/xte-cryptonote-nodejs-pool](https://github.com/TRRXITTE/xte-cryptonote-nodejs-pool)).

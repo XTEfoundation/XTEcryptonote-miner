@@ -24,8 +24,14 @@ class MinerPrefs(ctx: Context) {
         set(v) = p.edit().putString(KEY_HOST, v.trim()).apply()
 
     var poolPort: Int
-        get() = p.getInt(KEY_PORT, defaultPortFor(mode))
-        set(v) = p.edit().putInt(KEY_PORT, v).apply()
+        get() {
+            val v = p.getInt(KEY_PORT, defaultPortFor(mode))
+            return if (v in 1..65535) v else defaultPortFor(mode)
+        }
+        set(v) {
+            val stored = if (v in 1..65535) v else defaultPortFor(mode)
+            p.edit().putInt(KEY_PORT, stored).apply()
+        }
 
     var wallet: String
         get() = p.getString(KEY_WALLET, "") ?: ""
@@ -36,8 +42,15 @@ class MinerPrefs(ctx: Context) {
         set(v) = p.edit().putString(KEY_PASS, v).apply()
 
     var threads: Int
-        get() = p.getInt(KEY_THREADS, Runtime.getRuntime().availableProcessors().coerceIn(1, 4))
+        get() = p.getInt(KEY_THREADS, Runtime.getRuntime().availableProcessors().coerceIn(1, 4)).coerceIn(1, 16)
         set(v) = p.edit().putInt(KEY_THREADS, v.coerceIn(1, 16)).apply()
+
+    /** True after the user or a previous Start has stored an explicit TLS choice. */
+    fun isPoolTlsSet(): Boolean = p.contains(KEY_POOL_TLS)
+
+    var poolTls: Boolean
+        get() = p.getBoolean(KEY_POOL_TLS, false)
+        set(v) = p.edit().putBoolean(KEY_POOL_TLS, v).apply()
 
     companion object {
         const val DEFAULT_HOST = "xte.trrxitte.com"
@@ -51,6 +64,7 @@ class MinerPrefs(ctx: Context) {
         private const val KEY_WALLET = "wallet"
         private const val KEY_PASS = "password"
         private const val KEY_THREADS = "threads"
+        private const val KEY_POOL_TLS = "pool_tls"
 
         fun defaultHostFor(mode: MiningMode): String =
             if (mode == MiningMode.SEEDNODE) DEFAULT_SEED_HOST else DEFAULT_HOST

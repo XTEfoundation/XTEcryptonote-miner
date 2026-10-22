@@ -8,10 +8,15 @@
     <string name="mode_seednode">Seednode (solo)</string>
     <string name="pool_host">Host</string>
     <string name="pool_port">Port</string>
+    <string name="pool_tls">TLS (pool SSL, port 9999)</string>
     <string name="wallet">Wallet address (XT…)</string>
     <string name="password">Password / worker</string>
     <string name="threads">CPU threads</string>
-    <string name="err_wallet">Enter a valid XTE wallet address before starting.</string>
+    <string name="err_wallet">Enter a valid XTE wallet address (starts with XT).</string>
+    <string name="err_host">Enter a valid host name or IP address.</string>
+    <string name="err_port">Enter a port between 1 and 65535.</string>
+    <string name="err_threads">Thread count must be between 1 and 16.</string>
+    <string name="err_password">Password must be 1–128 printable characters.</string>
     <string name="status_fmt">Status: %1$s</string>
     <string name="hashrate_fmt">Hashrate: %1$s  (total hashes: %2$d)</string>
     <string name="shares_fmt">Accepted: %1$d  rejected: %2$d</string>

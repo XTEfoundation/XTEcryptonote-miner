@@ -21,18 +21,20 @@ class MiningEngine(
     }
 
     private val main = Handler(Looper.getMainLooper())
-    private var stratum: StratumClient? = null
-    private var daemon: DaemonRpcClient? = null
-    private var hasher: ChukwaHasher? = null
+    @Volatile private var stratum: StratumClient? = null
+    @Volatile private var daemon: DaemonRpcClient? = null
+    @Volatile private var hasher: ChukwaHasher? = null
     private val accepted = AtomicLong(0)
     private val rejected = AtomicLong(0)
     private var lastHashes = 0L
     private var lastHashTime = 0L
-    private var hashrate = 0.0
-    private var statusText = "Idle"
+    @Volatile private var hashrate = 0.0
+    @Volatile private var statusText = "Idle"
     private var ticker: Runnable? = null
     @Volatile private var mining = false
     @Volatile private var mode: MiningMode = MiningMode.POOL
+    @Volatile private var secretWallet = ""
+    @Volatile private var secretPass = ""
 
     fun start(
         mode: MiningMode,
@@ -40,11 +42,35 @@ class MiningEngine(
         port: Int,
         wallet: String,
         password: String,
-        threads: Int
-    ) {
-        if (mining) return
+        threads: Int,
+        useTls: Boolean = MinerValidation.stratumUsesTls(port)
+    ): Boolean {
+        if (mining) return false
+        val hostNorm = MinerValidation.normalizeHost(host)
+        val walletNorm = wallet.trim()
+        val poolMode = mode != MiningMode.SEEDNODE
+        val passNorm = if (poolMode) {
+            if (password.isEmpty()) MinerPrefs.DEFAULT_PASS else password
+        } else {
+            MinerPrefs.DEFAULT_PASS
+        }
+        val err = if (hostNorm == null) {
+            MinerValidation.ERR_HOST
+        } else {
+            MinerValidation.validateConfig(poolMode, hostNorm, port, walletNorm, passNorm, threads)
+        }
+        if (err != null) {
+            statusText = err
+            pushStats()
+            log(err)
+            return false
+        }
+        val endpoint = hostNorm ?: return false
+
         mining = true
         this.mode = mode
+        secretWallet = walletNorm
+        secretPass = if (poolMode) passNorm else ""
         accepted.set(0)
         rejected.set(0)
         lastHashes = 0
@@ -53,17 +79,34 @@ class MiningEngine(
         statusText = "Starting…"
         pushStats()
         val modeLabel = if (mode == MiningMode.SEEDNODE) "seednode" else "pool"
-        log("Starting miner ($modeLabel): $host:$port threads=$threads")
-
-        hasher = ChukwaHasher(this)
-        hasher!!.start(threads)
+        val tlsNote = if (poolMode && useTls) " tls" else ""
+        log("Starting miner ($modeLabel): $endpoint:$port threads=$threads$tlsNote")
 
         if (mode == MiningMode.SEEDNODE) {
+            log(
+                "Solo mode polls height and difficulty only. traaitt hashes a parent-block " +
+                    "blob (nonce at offset 39 of that blob, not of the raw template), so this " +
+                    "build does not hash or submit solo blocks. See SECURITY.md."
+            )
             daemon = DaemonRpcClient(this)
-            daemon!!.connect(host, port, wallet)
+            daemon!!.connect(endpoint, port, walletNorm)
         } else {
+            try {
+                hasher = ChukwaHasher(this)
+                hasher!!.start(threads)
+            } catch (e: Exception) {
+                Log.e(TAG, "hasher start failed: ${e.javaClass.simpleName}")
+                mining = false
+                hasher = null
+                secretWallet = ""
+                secretPass = ""
+                statusText = "Failed to start miner"
+                pushStats()
+                log("Failed to start miner")
+                return false
+            }
             stratum = StratumClient(this)
-            stratum!!.connect(host, port, wallet, password)
+            stratum!!.connect(endpoint, port, walletNorm, passNorm, useTls = useTls)
         }
 
         val tick = object : Runnable {
@@ -81,6 +124,7 @@ class MiningEngine(
         }
         ticker = tick
         main.postDelayed(tick, 1000)
+        return true
     }
 
     fun stop() {
@@ -95,6 +139,8 @@ class MiningEngine(
         stratum = null
         try { daemon?.disconnect() } catch (_: Exception) {}
         daemon = null
+        secretWallet = ""
+        secretPass = ""
         statusText = "Stopped"
         hashrate = 0.0
         pushStats()
@@ -103,32 +149,43 @@ class MiningEngine(
 
     fun isMining(): Boolean = mining
 
-    // --- Stratum + Daemon shared status/error ---
-
     override fun onStatus(status: String) {
-        statusText = status
+        statusText = redact(status)
         pushStats()
         log(status)
     }
 
     override fun onError(message: String) {
-        log(message)
-        statusText = message
+        statusText = redact(message)
         pushStats()
+        log(message)
     }
-
-    // --- Stratum pool path ---
 
     override fun onJob(jobId: String, blobHex: String, targetHex: String, sessionId: String) {
         try {
-            val blob = hexToBytes(blobHex)
-            val target64 = parseTarget64(targetHex)
+            if (MinerValidation.validateStratumJob(jobId, blobHex, targetHex) != null) {
+                log("Rejected job")
+                return
+            }
+            val blob = MinerValidation.hexToBytes(blobHex, MinerValidation.MAX_JOB_BLOB_BYTES)
+            val target64 = MinerValidation.parseTarget64(targetHex)
+            if (target64 == 0L) {
+                log("Rejected job")
+                return
+            }
             hasher?.setJob(blob, jobId, target64)
-            log("New job $jobId target=$targetHex tgt64=$target64 blob=${blob.size}B")
+            log("New job $jobId target=$targetHex blob=${blob.size}B")
             statusText = "Mining"
             pushStats()
         } catch (e: Exception) {
-            log("Bad job: ${e.message}")
+            log("Bad job: ${e.javaClass.simpleName}")
+        }
+    }
+
+    override fun onConnectionLost() {
+        try {
+            hasher?.clearJob()
+        } catch (_: Exception) {
         }
     }
 
@@ -144,17 +201,13 @@ class MiningEngine(
         log("Share rejected: $reason")
     }
 
-    // --- Seednode daemon path ---
-
     override fun onTemplate(jobId: String, blobHex: String, target64: Long, height: Long, difficulty: Long) {
-        try {
-            val blob = hexToBytes(blobHex)
-            hasher?.setJob(blob, jobId, target64)
-            log("New template h=$height diff=$difficulty tgt64=$target64 blob=${blob.size}B job=$jobId")
-            statusText = "Mining (solo h=$height)"
-            pushStats()
-        } catch (e: Exception) {
-            log("Bad template: ${e.message}")
+        // Defense in depth: never hash a raw blocktemplate_blob. Pool jobs use onJob.
+        log("Solo template ignored (h=$height diff=$difficulty)")
+        if (blobHex.length > MinerValidation.MAX_HASH_BLOB_BYTES * 2 || target64 == 0L ||
+            !MinerValidation.isJobId(jobId)
+        ) {
+            return
         }
     }
 
@@ -170,11 +223,10 @@ class MiningEngine(
         log("Block rejected: $reason")
     }
 
-    // --- Hasher share callback ---
-
     override fun onShareFound(jobId: String, nonce: Int, hash: ByteArray) {
+        if (!MinerValidation.isJobId(jobId) || hash.size != MinerValidation.HASH_BYTES) return
         val nonceHex = String.format("%08x", nonce)
-        val resultHex = bytesToHex(hash)
+        val resultHex = MinerValidation.bytesToHex(hash)
         if (mode == MiningMode.SEEDNODE) {
             log("Block candidate nonce=$nonceHex")
             daemon?.submitBlock(jobId, nonce)
@@ -184,62 +236,34 @@ class MiningEngine(
         }
     }
 
+    private fun redact(line: String): String {
+        return MinerValidation.redact(line, listOf(secretWallet, secretPass))
+    }
+
     private fun pushStats() {
         val h = hasher?.hashes() ?: lastHashes
+        val status = statusText
+        val hr = hashrate
+        val acc = accepted.get()
+        val rej = rejected.get()
         main.post {
-            statsListener.onStats(statusText, hashrate, accepted.get(), rejected.get(), h)
+            statsListener.onStats(status, hr, acc, rej, h)
         }
     }
 
     private fun log(line: String) {
-        Log.i(TAG, line)
-        main.post { statsListener.onLog(line) }
+        val safe = redact(line)
+        Log.i(TAG, safe)
+        main.post { statsListener.onLog(safe) }
     }
 
     companion object {
         private const val TAG = "MiningEngine"
 
-        fun hexToBytes(hex: String): ByteArray {
-            val clean = if (hex.length % 2 != 0) "0$hex" else hex
-            val out = ByteArray(clean.length / 2)
-            var i = 0
-            while (i < clean.length) {
-                out[i / 2] = ((Character.digit(clean[i], 16) shl 4) + Character.digit(clean[i + 1], 16)).toByte()
-                i += 2
-            }
-            return out
-        }
+        fun hexToBytes(hex: String): ByteArray = MinerValidation.hexToBytes(hex)
 
-        fun bytesToHex(bytes: ByteArray): String {
-            val sb = StringBuilder(bytes.size * 2)
-            for (b in bytes) sb.append(String.format("%02x", b))
-            return sb.toString()
-        }
+        fun bytesToHex(bytes: ByteArray): String = MinerValidation.bytesToHex(bytes)
 
-        /**
-         * Match xmrig Job::setTarget for 4-byte Cryptonote pool targets:
-         * raw = fromHex(target); t32 = *(uint32_t*)raw;
-         * target64 = 0xFFFFFFFFFFFFFFFF / (0xFFFFFFFF / t32)
-         */
-        fun parseTarget64(targetHex: String): Long {
-            val bytes = hexToBytes(targetHex)
-            if (bytes.size >= 8) {
-                var v = 0L
-                for (i in 0 until 8) {
-                    v = v or ((bytes[i].toLong() and 0xffL) shl (8 * i))
-                }
-                return v
-            }
-            if (bytes.size < 4) return 0L
-            var t32 = 0L
-            for (i in 0 until 4) {
-                t32 = t32 or ((bytes[i].toLong() and 0xffL) shl (8 * i))
-            }
-            if (t32 == 0L) return 0L
-            // unsigned: 0xFFF..F / (0xFFFFFFFF / t32)  — matches xmrig
-            val denom = java.lang.Long.divideUnsigned(0xffffffffL, t32)
-            if (denom == 0L) return 0L
-            return java.lang.Long.divideUnsigned(-1L, denom)
-        }
+        fun parseTarget64(targetHex: String): Long = MinerValidation.parseTarget64(targetHex)
     }
 }

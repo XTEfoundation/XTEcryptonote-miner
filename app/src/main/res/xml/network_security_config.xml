@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Cleartext HTTP is off by default. The platform stack may use it only for the
+  public pool/seed hosts and localhost. A user-typed daemon on any other host
+  (including an IP) is reached by DaemonRpcClient's direct socket, which does
+  not follow redirects. Stratum TLS uses SSLSocket and the system trust store.
+  User-installed CAs are not trusted.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">trrxitte.com</domain>
+        <domain includeSubdomains="true">localhost</domain>
+    </domain-config>
+</network-security-config>

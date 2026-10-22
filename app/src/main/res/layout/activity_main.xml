@@ -60,7 +60,10 @@
                 android:id="@+id/etHost"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:inputType="textUri"
+                android:inputType="text"
+                android:maxLines="1"
+                android:maxLength="253"
+                android:importantForAutofill="no"
                 android:textColor="@color/text" />
         </com.google.android.material.textfield.TextInputLayout>
 
@@ -74,8 +77,19 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:inputType="number"
+                android:maxLines="1"
+                android:maxLength="5"
+                android:importantForAutofill="no"
                 android:textColor="@color/text" />
         </com.google.android.material.textfield.TextInputLayout>
+
+        <CheckBox
+            android:id="@+id/cbPoolTls"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/pool_tls"
+            android:textColor="@color/text" />
 
         <com.google.android.material.textfield.TextInputLayout
             android:layout_width="match_parent"
@@ -87,6 +101,9 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:inputType="textVisiblePassword"
+                android:maxLines="1"
+                android:maxLength="192"
+                android:importantForAutofill="no"
                 android:textColor="@color/text" />
         </com.google.android.material.textfield.TextInputLayout>
 
@@ -101,6 +118,9 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:inputType="text"
+                android:maxLines="1"
+                android:maxLength="128"
+                android:importantForAutofill="no"
                 android:textColor="@color/text" />
         </com.google.android.material.textfield.TextInputLayout>
 
@@ -114,6 +134,9 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:inputType="number"
+                android:maxLines="1"
+                android:maxLength="2"
+                android:importantForAutofill="no"
                 android:textColor="@color/text" />
         </com.google.android.material.textfield.TextInputLayout>
 

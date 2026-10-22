@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Seednode JSON-RPC is cleartext HTTP by protocol, so cleartext stays permitted.
+  Stratum TLS (pool port 9999) uses SSLSocket. User-installed CAs are not trusted.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

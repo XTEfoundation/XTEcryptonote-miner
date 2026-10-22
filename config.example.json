@@ -7,7 +7,7 @@
         "4444": "Mid-range (diff ~1000000)",
         "5555": "High-end (diff ~2500000)",
         "7777": "Cloud / NiceHash-style (diff ~5000000)",
-        "9999": "Alternate (see pool config)"
+        "9999": "TLS/SSL (pool ssl:true). The app turns TLS on for this port."
       },
       "protocol": "cryptonote-nodejs-pool login/job/submit (JSON lines over TCP)",
       "password": "x"

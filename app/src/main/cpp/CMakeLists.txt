@@ -25,4 +25,19 @@ target_include_directories(xte_chukwa PRIVATE
     ${ARGON2_DIR}/include
     ${ARGON2_DIR}/src
 )
+target_compile_options(xte_chukwa PRIVATE
+    -fstack-protector-strong
+    -fno-strict-overflow
+    -Wformat
+    -Werror=format-security
+)
+target_link_options(xte_chukwa PRIVATE
+    -Wl,-z,relro
+    -Wl,-z,now
+    -Wl,-z,noexecstack
+)
+set_target_properties(xte_chukwa PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+)
 target_link_libraries(xte_chukwa argon2_ref log)

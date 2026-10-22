@@ -6,15 +6,18 @@ Android CPU miner for **traaitt [XTE]** (Cryptonote) using **Chukwa** (Argon2id)
 - Honest miner: **no developer fee**, no silent background mining — mining starts only after you enter a wallet and tap **Start**.
 - ABI: `arm64-v8a`, `armeabi-v7a` · minSdk 26 · targetSdk 34
 - Modes: **Pool** (stratum) and **Seednode** (solo daemon JSON-RPC)
+- Security notes and the hardening pass: [`SECURITY.md`](SECURITY.md)
 
 ## Pool defaults
 
 | Setting | Default |
 |--------|---------|
 | Host | `xte.trrxitte.com` |
-| Port | `3333` (also 4444 / 5555 / 7777 / 9999) |
+| Port | `3333` (also 4444 / 5555 / 7777). `9999` is TLS |
 | Algo | `chukwa` |
 | Password | `x` (or your worker name) |
+
+Port **9999** is the pool’s TLS port. The app speaks TLS there (hostname checked, TLS 1.2 or 1.3). The other pool ports stay cleartext TCP, which is what the pool expects. Seednode RPC stays `http://` because the daemon JSON-RPC endpoint is HTTP.
 
 Sites: [traaitt.com](https://traaitt.com) · [mine.traaitt.com](https://mine.traaitt.com) · [explorer.traaitt.com](https://explorer.traaitt.com)
 

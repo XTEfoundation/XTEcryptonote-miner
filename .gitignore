@@ -19,8 +19,14 @@ out/
 .navigation/
 *.jks
 *.keystore
+*.p12
+*.pk8
+*.pem
+*.key
 keystore.properties
 secrets/
+*.env
+!*.env.example
 *.log
 .cxx
 app/.cxx/

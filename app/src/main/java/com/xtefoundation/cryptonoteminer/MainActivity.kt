@@ -88,24 +88,52 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
                 setFieldsEnabled(true)
                 btnStartStop.text = getString(R.string.start)
             } else {
-                savePrefs()
+                val mode = currentMode()
+                val hostRaw = etHost.text.toString().trim().ifEmpty { MinerPrefs.defaultHostFor(mode) }
+                val host = MinerValidation.normalizeHost(hostRaw)
+                val portText = etPort.text.toString().trim()
+                val port = if (portText.isEmpty()) {
+                    MinerPrefs.defaultPortFor(mode)
+                } else {
+                    portText.toIntOrNull()
+                }
                 val wallet = etWallet.text.toString().trim()
-                if (wallet.length < 10) {
-                    Toast.makeText(this, R.string.err_wallet, Toast.LENGTH_LONG).show()
+                val pass = etPass.text.toString().ifEmpty { MinerPrefs.DEFAULT_PASS }
+                val threadsText = etThreads.text.toString().trim()
+                val threads = if (threadsText.isEmpty()) {
+                    Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
+                } else {
+                    threadsText.toIntOrNull()
+                }
+                val err = when {
+                    host == null -> MinerValidation.ERR_HOST
+                    port == null || port !in 1..65535 -> MinerValidation.ERR_PORT
+                    threads == null || threads !in 1..16 -> MinerValidation.ERR_THREADS
+                    else -> MinerValidation.validateConfig(
+                        mode == MiningMode.POOL, host, port, wallet, pass, threads
+                    )
+                }
+                if (err != null || host == null || port == null || threads == null) {
+                    Toast.makeText(this, err ?: MinerValidation.ERR_HOST, Toast.LENGTH_LONG).show()
                     return@setOnClickListener
                 }
-                val mode = currentMode()
-                val host = etHost.text.toString().trim()
-                    .ifEmpty { MinerPrefs.defaultHostFor(mode) }
-                val port = etPort.text.toString().toIntOrNull()
-                    ?: MinerPrefs.defaultPortFor(mode)
-                val pass = etPass.text.toString().ifEmpty { MinerPrefs.DEFAULT_PASS }
-                val threads = etThreads.text.toString().toIntOrNull()?.coerceIn(1, 16)
-                    ?: Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
+                etHost.setText(host)
+                etPort.setText(port.toString())
+                etThreads.setText(threads.toString())
+                prefs.mode = mode
+                prefs.poolHost = host
+                prefs.poolPort = port
+                prefs.wallet = wallet
+                prefs.password = etPass.text.toString()
+                prefs.threads = threads
 
                 setFieldsEnabled(false)
                 btnStartStop.text = getString(R.string.stop)
-                engine.start(mode, host, port, wallet, pass, threads)
+                val started = engine.start(mode, host, port, wallet, pass, threads)
+                if (!started) {
+                    setFieldsEnabled(true)
+                    btnStartStop.text = getString(R.string.start)
+                }
             }
         }
 
@@ -127,16 +155,6 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
             etHost.setText(MinerPrefs.defaultHostFor(mode))
             etPort.setText(MinerPrefs.defaultPortFor(mode).toString())
         }
-    }
-
-    private fun savePrefs() {
-        prefs.mode = currentMode()
-        prefs.poolHost = etHost.text.toString()
-        prefs.poolPort = etPort.text.toString().toIntOrNull()
-            ?: MinerPrefs.defaultPortFor(currentMode())
-        prefs.wallet = etWallet.text.toString()
-        prefs.password = etPass.text.toString()
-        prefs.threads = etThreads.text.toString().toIntOrNull() ?: prefs.threads
     }
 
     private fun setFieldsEnabled(enabled: Boolean) {

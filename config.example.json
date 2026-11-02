@@ -1,5 +1,18 @@
 {
+  "default_mode": "seednode",
   "modes": {
+    "seednode": {
+      "host": "main.trrxitte.com",
+      "port": 443,
+      "tls": true,
+      "endpoint": "POST https://main.trrxitte.com/json_rpc",
+      "plain_rpc_port": 14485,
+      "methods": [
+        "getblocktemplate",
+        "submitblock"
+      ],
+      "protocol": "XTEnetwork daemon RPC (solo / seednode), HTTPS by default"
+    },
     "pool": {
       "host": "main.trrxitte.com",
       "ports": {
@@ -11,13 +24,6 @@
       },
       "protocol": "cryptonote-nodejs-pool login/job/submit (JSON lines over TCP)",
       "password": "x"
-    },
-    "seednode": {
-      "host": "main.trrxitte.com",
-      "port": 14485,
-      "endpoint": "POST http://HOST:PORT/json_rpc",
-      "methods": ["getblocktemplate", "submitblock"],
-      "protocol": "XTEnetwork daemon RPC (solo / seednode)"
     }
   },
   "algorithm": "chukwa",

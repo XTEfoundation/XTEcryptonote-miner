@@ -5,10 +5,11 @@
     <string name="stop">Stop</string>
     <string name="mining_mode">Mining mode</string>
     <string name="mode_pool">Pool</string>
-    <string name="mode_seednode">Seednode (solo)</string>
+    <string name="mode_seednode">Solo (seednode)</string>
     <string name="pool_host">Host</string>
     <string name="pool_port">Port</string>
     <string name="pool_tls">TLS (pool SSL, port 9999)</string>
+    <string name="seed_tls">TLS / HTTPS (seednode, port 443)</string>
     <string name="wallet">Wallet address (XT…)</string>
     <string name="password">Password / worker</string>
     <string name="threads">CPU threads</string>

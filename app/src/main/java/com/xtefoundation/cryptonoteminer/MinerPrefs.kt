@@ -7,8 +7,9 @@ enum class MiningMode {
     SEEDNODE;
 
     companion object {
+        /** Solo mining against the seednode is the default; only an explicit "POOL" picks the pool. */
         fun fromPrefs(value: String?): MiningMode =
-            if (value.equals(SEEDNODE.name, ignoreCase = true)) SEEDNODE else POOL
+            if (value.equals(POOL.name, ignoreCase = true)) POOL else SEEDNODE
     }
 }
 
@@ -16,7 +17,7 @@ class MinerPrefs(ctx: Context) {
     private val p = ctx.getSharedPreferences("xte_miner", Context.MODE_PRIVATE)
 
     var mode: MiningMode
-        get() = MiningMode.fromPrefs(p.getString(KEY_MODE, MiningMode.POOL.name))
+        get() = MiningMode.fromPrefs(p.getString(KEY_MODE, MiningMode.SEEDNODE.name))
         set(v) = p.edit().putString(KEY_MODE, v.name).apply()
 
     var poolHost: String
@@ -52,11 +53,20 @@ class MinerPrefs(ctx: Context) {
         get() = p.getBoolean(KEY_POOL_TLS, false)
         set(v) = p.edit().putBoolean(KEY_POOL_TLS, v).apply()
 
+    fun isSeedTlsSet(): Boolean = p.contains(KEY_SEED_TLS)
+
+    var seedTls: Boolean
+        get() = p.getBoolean(KEY_SEED_TLS, true)
+        set(v) = p.edit().putBoolean(KEY_SEED_TLS, v).apply()
+
     companion object {
         const val DEFAULT_HOST = "main.trrxitte.com"
         const val DEFAULT_PORT = 3333
         const val DEFAULT_SEED_HOST = "main.trrxitte.com"
-        const val DEFAULT_SEED_PORT = 14485
+        const val DEFAULT_SEED_PORT = 443
+        /** Plain daemon RPC port (cleartext), still selectable by typing it with TLS off. */
+        const val SEED_PLAIN_PORT = 14485
+        val DEFAULT_MODE = MiningMode.SEEDNODE
         const val DEFAULT_PASS = "x"
         private const val KEY_MODE = "mining_mode"
         private const val KEY_HOST = "pool_host"
@@ -65,11 +75,16 @@ class MinerPrefs(ctx: Context) {
         private const val KEY_PASS = "password"
         private const val KEY_THREADS = "threads"
         private const val KEY_POOL_TLS = "pool_tls"
+        private const val KEY_SEED_TLS = "seed_tls"
 
         fun defaultHostFor(mode: MiningMode): String =
             if (mode == MiningMode.SEEDNODE) DEFAULT_SEED_HOST else DEFAULT_HOST
 
         fun defaultPortFor(mode: MiningMode): Int =
             if (mode == MiningMode.SEEDNODE) DEFAULT_SEED_PORT else DEFAULT_PORT
+
+        fun defaultTlsFor(mode: MiningMode, port: Int): Boolean =
+            if (mode == MiningMode.SEEDNODE) MinerValidation.daemonUsesTls(port)
+            else MinerValidation.stratumUsesTls(port)
     }
 }

@@ -5,7 +5,7 @@ Android CPU miner for **traaitt [XTE]** (Cryptonote) using **Chukwa** (Argon2id)
 - Package: `com.xtefoundation.cryptonoteminer`
 - Honest miner: **no developer fee**, no silent background mining — mining starts only after you enter a wallet and tap **Start**.
 - ABI: `arm64-v8a`, `armeabi-v7a` · minSdk 26 · targetSdk 34
-- Modes: **Pool** (stratum) and **Seednode** (solo daemon JSON-RPC)
+- Modes: **Solo / Seednode** (default: daemon JSON-RPC over HTTPS at `https://main.trrxitte.com/json_rpc`) and **Pool** (stratum)
 - Security notes and the hardening pass: [`SECURITY.md`](SECURITY.md)
 
 ## Pool defaults
@@ -19,17 +19,18 @@ Android CPU miner for **traaitt [XTE]** (Cryptonote) using **Chukwa** (Argon2id)
 
 Port **9999** is the pool’s documented TLS port. The TLS checkbox starts checked for that port and can be turned off (some pool configs serve it as cleartext). TLS checks the hostname and uses TLS 1.2 or 1.3. The other pool ports stay cleartext TCP. A dropped pool socket reconnects with backoff until you tap Stop. A rejected login does not reconnect.
 
-Seednode RPC stays `http://`. Cleartext HTTP from the platform stack is limited to `trrxitte.com` (and subdomains) and `localhost`. Any other daemon host you enter is contacted directly, with no redirects.
+Seednode RPC uses HTTPS by default (port 443, system CAs, normal hostname verification). With the TLS box unchecked it speaks plain `http://`; cleartext HTTP from the platform stack is limited to `trrxitte.com` (and subdomains) and `localhost`, and any other daemon host you enter is contacted directly, with no redirects.
 
 Sites: [traaitt.com](https://traaitt.com) · [mine.traaitt.com](https://mine.traaitt.com) · [explorer.traaitt.com](https://explorer.traaitt.com)
 
-## Seednode (solo) defaults
+## Solo / Seednode defaults (the app's default mode)
 
 | Setting | Default |
 |--------|---------|
 | Host | `main.trrxitte.com` |
-| Port | `14485` (daemon `--rpc-bind-port`) |
-| Endpoint | `POST http://HOST:PORT/json_rpc` |
+| Port | `443` with TLS (HTTPS reverse proxy). Plain daemon RPC: `14485` with TLS off |
+| TLS | on (checkbox; defaults on for port 443, off for other ports) |
+| Endpoint | `POST https://main.trrxitte.com/json_rpc` |
 | Wallet | required (coinbase address) |
 | Password | unused (hidden in UI) |
 
@@ -41,7 +42,7 @@ Solo mining talks to an XTEnetwork daemon RPC (not stratum):
 4. On a hit, re-check the hash with the exact `check_hash` rule, write the nonce into the full block, and send `submitblock ["<hex>"]`. Accepted/rejected blocks are counted in the UI.
 5. New work on every height or previous-block change and every 30 s; work for an old tip is dropped.
 
-Only v6 (Chukwa) templates are mined. The block reward goes to the wallet you entered. Solo mining at network difficulty on a phone is a lottery; use pool mode for steady payouts. Construction, test vectors, and what is still unverified: [`SECURITY.md`](SECURITY.md#solo-mining-seednode-mode).
+Only v6 (Chukwa) templates are mined. A real template from `main.trrxitte.com` (height 1,788,054, difficulty 87,238, major 6) is kept as a unit-test fixture and builds a valid job (`LiveTemplateTest`). The block reward goes to the wallet you entered. Solo mining at network difficulty on a phone is a lottery; use pool mode for steady payouts. Construction, test vectors, and what is still unverified: [`SECURITY.md`](SECURITY.md#solo-mining-seednode-mode).
 
 If the seednode host does not resolve or the daemon is unreachable, the app logs a DNS/RPC error and stays idle (no silent mining).
 
@@ -80,7 +81,7 @@ Release artifact: [`releases/XTEcryptonote-miner.apk`](releases/XTEcryptonote-mi
 adb install -r releases/XTEcryptonote-miner.apk
 ```
 
-Enable “Install unknown apps” if needed. Choose **Pool** or **Seednode**, enter an `XT…` wallet, adjust host/port/threads, tap **Start mining**.
+Enable “Install unknown apps” if needed. Keep the default **Solo (seednode)** or choose **Pool**, enter an `XT…` wallet, adjust host/port/threads, tap **Start mining**.
 
 ## Build from source
 

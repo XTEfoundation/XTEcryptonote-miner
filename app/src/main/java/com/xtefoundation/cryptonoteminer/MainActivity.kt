@@ -80,14 +80,7 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
         }
         etHost.setText(prefs.poolHost)
         etPort.setText(prefs.poolPort.toString())
-        suppressTls = true
-        tlsUserSet = prefs.isPoolTlsSet()
-        cbPoolTls.isChecked = if (tlsUserSet) {
-            prefs.poolTls
-        } else {
-            prefs.poolPort == MinerValidation.POOL_TLS_PORT
-        }
-        suppressTls = false
+        loadTlsFor(prefs.mode, prefs.poolPort)
         applyModeUi(prefs.mode, fillPresets = false)
         applyingMode = false
 
@@ -100,7 +93,8 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
             override fun afterTextChanged(s: Editable?) {
                 if (tlsUserSet || suppressTls) return
                 suppressTls = true
-                cbPoolTls.isChecked = s?.toString()?.trim()?.toIntOrNull() == MinerValidation.POOL_TLS_PORT
+                val port = s?.toString()?.trim()?.toIntOrNull() ?: -1
+                cbPoolTls.isChecked = MinerPrefs.defaultTlsFor(currentMode(), port)
                 suppressTls = false
             }
         })
@@ -155,8 +149,8 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
                 prefs.wallet = wallet
                 prefs.password = etPass.text.toString()
                 prefs.threads = threads
-                val useTls = mode == MiningMode.POOL && cbPoolTls.isChecked
-                if (mode == MiningMode.POOL) prefs.poolTls = useTls
+                val useTls = cbPoolTls.isChecked
+                if (mode == MiningMode.POOL) prefs.poolTls = useTls else prefs.seedTls = useTls
 
                 setFieldsEnabled(false)
                 btnStartStop.text = getString(R.string.stop)
@@ -171,9 +165,8 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
         onStats("Idle", 0.0, 0, 0, 0)
         onLog("XTE Miner ready. Enter XT… wallet and tap Start. No mining until you start.")
         onLog("Algo: Chukwa (Argon2id t=3 m=512KiB p=1).")
-        onLog("Pool: ${MinerPrefs.DEFAULT_HOST}:${MinerPrefs.DEFAULT_PORT} (CN login/job/submit)")
-        onLog("Pool TLS is optional. Port ${MinerValidation.POOL_TLS_PORT} starts with the TLS box checked.")
-        onLog("Seednode: ${MinerPrefs.DEFAULT_SEED_HOST}:${MinerPrefs.DEFAULT_SEED_PORT} (daemon JSON-RPC, height only)")
+        onLog("Default: solo mining on seednode https://${MinerPrefs.DEFAULT_SEED_HOST}:${MinerPrefs.DEFAULT_SEED_PORT}/json_rpc (TLS)")
+        onLog("Alternative: pool ${MinerPrefs.DEFAULT_HOST}:${MinerPrefs.DEFAULT_PORT}. Plain daemon RPC: port ${MinerPrefs.SEED_PLAIN_PORT} with TLS off.")
     }
 
     private fun currentMode(): MiningMode =
@@ -182,12 +175,25 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
     private fun applyModeUi(mode: MiningMode, fillPresets: Boolean) {
         val seed = mode == MiningMode.SEEDNODE
         tilPass.visibility = if (seed) View.GONE else View.VISIBLE
-        cbPoolTls.visibility = if (seed) View.GONE else View.VISIBLE
+        cbPoolTls.text = getString(if (seed) R.string.seed_tls else R.string.pool_tls)
         tilHost.hint = if (seed) getString(R.string.pool_host) + " (daemon)" else getString(R.string.pool_host)
         if (fillPresets) {
             etHost.setText(MinerPrefs.defaultHostFor(mode))
             etPort.setText(MinerPrefs.defaultPortFor(mode).toString())
+            loadTlsFor(mode, MinerPrefs.defaultPortFor(mode))
         }
+    }
+
+    /** TLS box: the stored choice for this mode, else the default for the port. */
+    private fun loadTlsFor(mode: MiningMode, port: Int) {
+        suppressTls = true
+        tlsUserSet = if (mode == MiningMode.SEEDNODE) prefs.isSeedTlsSet() else prefs.isPoolTlsSet()
+        cbPoolTls.isChecked = when {
+            !tlsUserSet -> MinerPrefs.defaultTlsFor(mode, port)
+            mode == MiningMode.SEEDNODE -> prefs.seedTls
+            else -> prefs.poolTls
+        }
+        suppressTls = false
     }
 
     private fun setFieldsEnabled(enabled: Boolean) {

@@ -43,7 +43,7 @@ class MiningEngine(
         wallet: String,
         password: String,
         threads: Int,
-        useTls: Boolean = MinerValidation.stratumUsesTls(port)
+        useTls: Boolean = MinerPrefs.defaultTlsFor(mode, port)
     ): Boolean {
         if (mining) return false
         val hostNorm = MinerValidation.normalizeHost(host)
@@ -79,7 +79,7 @@ class MiningEngine(
         statusText = "Starting…"
         pushStats()
         val modeLabel = if (mode == MiningMode.SEEDNODE) "seednode" else "pool"
-        val tlsNote = if (poolMode && useTls) " tls" else ""
+        val tlsNote = if (useTls) " tls" else ""
         log("Starting miner ($modeLabel): $endpoint:$port threads=$threads$tlsNote")
 
         val h0 = try {
@@ -102,7 +102,7 @@ class MiningEngine(
                     "parent-block hashing blob (nonce @39) -> submitblock. Blocks pay the wallet above."
             )
             daemon = DaemonRpcClient(this) { input -> h0.hashOnce(input) }
-            daemon!!.connect(endpoint, port, walletNorm)
+            daemon!!.connect(endpoint, port, walletNorm, useTls = useTls)
         } else {
             stratum = StratumClient(this)
             stratum!!.connect(endpoint, port, walletNorm, passNorm, useTls = useTls)

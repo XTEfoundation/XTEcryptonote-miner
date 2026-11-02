@@ -24,6 +24,7 @@ object MinerValidation {
     const val MAX_STRATUM_LINE_CHARS = 64 * 1024
     const val MAX_RPC_BYTES = 256 * 1024
     const val POOL_TLS_PORT = 9999
+    const val DAEMON_TLS_PORT = 443
 
     const val ERR_WALLET = "Enter a valid XTE wallet address (starts with XT)."
     const val ERR_HOST = "Enter a valid host name or IP address."
@@ -66,6 +67,9 @@ object MinerValidation {
      * with `"ssl": false`.
      */
     fun stratumUsesTls(port: Int): Boolean = port == POOL_TLS_PORT
+
+    /** Default only: the seednode is served over HTTPS on 443; 14485 is the plain daemon RPC. */
+    fun daemonUsesTls(port: Int): Boolean = port == DAEMON_TLS_PORT
 
     /**
      * Accepts an ASCII hostname, IPv4, or IPv6 (optional brackets).

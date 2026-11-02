@@ -8,6 +8,7 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.URI
+import javax.net.ssl.HttpsURLConnection
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
@@ -23,10 +24,13 @@ import kotlin.concurrent.thread
  * Methods: [getblocktemplate], [submitblock] — matches traaitt
  * `RpcServer::on_getblocktemplate` / `on_submitblock`.
  *
- * The daemon protocol is cleartext HTTP. Responses are size-capped and redirects
- * are not followed. Hosts allowed by the network security config use
- * [HttpURLConnection]. Any other configured host is contacted with a direct
- * socket that only POSTs `/json_rpc` and does not follow redirects.
+ * With TLS (the default, `https://main.trrxitte.com:443/json_rpc`) requests go through
+ * [HttpsURLConnection] with the platform's default socket factory and hostname
+ * verifier: system CAs only (see network_security_config), normal hostname checks,
+ * no custom trust manager. Without TLS the daemon protocol is cleartext HTTP: hosts
+ * allowed by the network security config use [HttpURLConnection]; any other
+ * configured host is contacted with a direct socket that only POSTs `/json_rpc`.
+ * In every case responses are size-capped and redirects are not followed.
  *
  * Each template is parsed strictly by [CryptoNoteBlock] and turned into a [SoloJob]:
  * the merge-mining tag root is filled in exactly like traaitt's own solo miner
@@ -58,6 +62,7 @@ class DaemonRpcClient(
     @Volatile private var host: String = ""
     @Volatile private var port: Int = 0
     @Volatile private var wallet: String = ""
+    @Volatile private var useTls: Boolean = true
     @Volatile private var lastHeight: Long = -1L
     @Volatile private var lastDifficulty: Long = -1L
     @Volatile private var lastPrev: String = ""
@@ -75,7 +80,7 @@ class DaemonRpcClient(
     val acceptedBlocks: Long get() = accepted.get()
     val rejectedBlocks: Long get() = rejected.get()
 
-    fun connect(host: String, port: Int, wallet: String) {
+    fun connect(host: String, port: Int, wallet: String, useTls: Boolean = MinerValidation.daemonUsesTls(port)) {
         val hostNorm = MinerValidation.normalizeHost(host)
         val walletNorm = wallet.trim()
         if (hostNorm == null || port !in 1..65535 || !MinerValidation.isWallet(walletNorm)) {
@@ -90,10 +95,12 @@ class DaemonRpcClient(
         this.host = hostNorm
         this.port = port
         this.wallet = walletNorm
+        this.useTls = useTls
         resetJobs()
         if (submitExecutor.isShutdown) submitExecutor = newSubmitExecutor()
         running.set(true)
-        listener.onStatus("Connecting to seednode $hostNorm:$port…")
+        val scheme = if (useTls) "https" else "http"
+        listener.onStatus("Connecting to seednode $scheme://$hostNorm:$port…")
         pollThread = thread(name = "daemon-rpc-poll", isDaemon = true) {
             try {
                 listener.onStatus("Resolving $hostNorm…")
@@ -305,8 +312,10 @@ class DaemonRpcClient(
     private fun postJsonRpc(body: JSONObject, maxRequestBytes: Int): JSONObject {
         val payload = body.toString().toByteArray(Charsets.UTF_8)
         if (payload.size > maxRequestBytes) throw IOException("RPC request too large")
-        val bytes = if (platformCleartextAllowed(host)) {
-            postViaPlatform(payload)
+        val bytes = if (useTls) {
+            postViaPlatform(payload, tls = true)
+        } else if (platformCleartextAllowed(host)) {
+            postViaPlatform(payload, tls = false)
         } else {
             CleartextJsonRpc.post(
                 host,
@@ -336,9 +345,11 @@ class DaemonRpcClient(
         }
     }
 
-    private fun postViaPlatform(payload: ByteArray): ByteArray {
-        val uri = URI("http", null, host, port, "/json_rpc", null, null)
-        val conn = (uri.toURL().openConnection() as HttpURLConnection).apply {
+    private fun postViaPlatform(payload: ByteArray, tls: Boolean): ByteArray {
+        val uri = URI(if (tls) "https" else "http", null, host, port, "/json_rpc", null, null)
+        val opened = uri.toURL().openConnection()
+        if (tls && opened !is HttpsURLConnection) throw IOException("TLS connection unavailable")
+        val conn = (opened as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = READ_TIMEOUT_MS

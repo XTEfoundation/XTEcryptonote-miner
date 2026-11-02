@@ -1,6 +1,6 @@
 # Security review
 
-Hardening of the XTE Chukwa miner (Kotlin UI, stratum and daemon clients, NDK Argon2id). Pool and seednode modes, explicit Start/Stop, and no developer fee are unchanged. Defaults are `main.trrxitte.com:3333` (pool) and `main.trrxitte.com:14485` (seednode); `eu-east.trrxitte.com` and `xte.trrxitte.com` remain usable alternatives.
+Hardening of the XTE Chukwa miner (Kotlin UI, stratum and daemon clients, NDK Argon2id). Pool and seednode modes, explicit Start/Stop, and no developer fee are unchanged. The default mode is solo mining against the seednode `https://main.trrxitte.com:443/json_rpc` (TLS). The pool `main.trrxitte.com:3333` is the alternative mode, and plain daemon RPC on `14485` still works with TLS off; `eu-east.trrxitte.com` and `xte.trrxitte.com` remain usable alternatives.
 
 A separate review of `main` at `34d9508` (model grok-build-0.1, then checked by hand against that tree) is cross-checked below. Severities are that review's. Each item was re-checked in this tree before the fix.
 
@@ -30,6 +30,10 @@ Port 9999 is the cryptonote-nodejs-pool SSL port in the pool README template. A 
 The network security config cannot list an IP address or a host the user types at runtime. `HttpURLConnection` therefore follows the allowlist. `DaemonRpcClient` uses it when `NetworkSecurityPolicy.isCleartextTrafficPermitted(host)` is true. Otherwise it opens a socket only to the already-validated host and port, writes a single `POST /json_rpc`, and parses the response itself. That parser rejects 3xx responses, `Transfer-Encoding: chunked`, and bodies over 256 KiB.
 
 Stratum cleartext is already a raw socket to the host the user entered. It is not governed by the HTTP cleartext flag.
+
+## Seednode transport (TLS)
+
+The seednode default is HTTPS on 443 because the server IP is ephemeral and plain HTTP is easy to tamper with. `DaemonRpcClient` opens `https://HOST:PORT/json_rpc` with `HttpsURLConnection` and the platform defaults: the default `SSLSocketFactory` (system trust anchors only, per `network_security_config.xml`; user CAs are not trusted) and the default hostname verifier. There is no custom `TrustManager` and no trust-all path. Redirects are refused and response bodies stay capped at 256 KiB. With TLS off the old cleartext paths are unchanged. The host is always a name, never a pinned IP. Checked from the build box: `main.trrxitte.com:443` presents `CN=main.trrxitte.com` and validates against the JVM system CAs (TLS 1.3).
 
 ## Solo mining (seednode mode)
 
@@ -83,14 +87,16 @@ Seednode mode now builds real work from `getblocktemplate` and submits found blo
 
 - Keccak-256 vectors (`""`, `"abc"`, one zero byte, and lengths 55/135/136/137/200/271/272/273/500 produced by traaitt's own `keccak.c` and pycryptodome), plus a BouncyCastle `KeccakDigest` cross-check.
 - 13 real TurtleCoin mainnet blocks, v1–v6, from the turtlecoin-utils test suite (same block code as traaitt): every block hash and nonce reproduces; for the v6 block, Chukwa (BouncyCastle Argon2id) of the parent hashing blob reproduces the published PoW hash; the merge-mining root equals the aux header hash on all 10 depth-0 blocks.
+- `LiveTemplateTest`: a real traaitt `getblocktemplate` from `https://main.trrxitte.com/json_rpc` (height 1788054, difficulty 87238, 457-byte v6 blob, requested for the public example address in TRRXITTE/wallet-api-docs; nothing was submitted). It parses as major 6 with a depth-0 merge-mining tag, the 76-byte hashing blob has the nonce at 39, re-parsing the filled block round-trips byte-exactly, only the mm root and nonce differ from the template, the reserved bytes are untouched, and Chukwa (BouncyCastle Argon2id) runs on the exact bytes the native worker hashes.
+- `DefaultsTest`: solo/seednode over HTTPS 443 is the default; the pool stays the alternative.
 - A real daemon `getblocktemplate` response (TurtleCoin v5): the computed root equals the root in that suite's expected merged block, the submitted block re-parses to the same hashing blob, and only the root and nonce change.
 - `check_hash` against a BigInteger reference, the 64-bit prefilter never dropping a valid block, malformed or hostile blobs, and tree-hash shapes.
 
 ## Residual risk
 
 - Cleartext stratum on ports other than a TLS session is what those pool ports expect. Anyone on the path can see the wallet address (a public mining login) and the worker name, and can still substitute a job if TLS is off.
-- Seednode HTTP is unauthenticated. Point it at a daemon you trust. The direct-socket path exists so a daemon that is not on the cleartext allowlist still works; it does not follow redirects.
-- Solo mode has not been tested against a live traaitt daemon: no traaitt node or explorer API was reachable from the build environment. The vectors are real TurtleCoin data, and traaitt's block, hash, and tree code is the same in the paths used. A first real block on the network is the remaining proof.
+- Seednode RPC has no authentication beyond TLS server identity. With TLS off it is plain HTTP; point it at a daemon you trust. The direct-socket path exists so a daemon that is not on the cleartext allowlist still works; it does not follow redirects.
+- Solo job construction is now checked against a live traaitt template (see above), but no block has been found or submitted yet. A first accepted block on the network is the remaining proof. The node reported `network_height` well below its own height when checked; a node on a fork would make solo blocks worthless.
 - The solo parent block keeps the daemon's zero parent major, minor, and previous id, as traaitt's own `MinerManager` does. Pools that rewrite those fields (to 1 and the block's previous id) produce a different but also valid layout; this app does not.
 - At chain difficulty a phone finds a block rarely. Solo mining is a lottery; pool mode gives steady payouts.
 - The pool password is stored in `MODE_PRIVATE` prefs. It is not encrypted. It is a worker name (default `x`), not the spend key, and backup is off.

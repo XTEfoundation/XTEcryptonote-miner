@@ -1,6 +1,6 @@
 # Security review
 
-Hardening of the XTE Chukwa miner (Kotlin UI, stratum and daemon clients, NDK Argon2id). Pool and seednode modes, explicit Start/Stop, and no developer fee are unchanged. Defaults stay `xte.trrxitte.com:3333` and `eu-east.trrxitte.com:14485`.
+Hardening of the XTE Chukwa miner (Kotlin UI, stratum and daemon clients, NDK Argon2id). Pool and seednode modes, explicit Start/Stop, and no developer fee are unchanged. Defaults are `main.trrxitte.com:3333` (pool) and `main.trrxitte.com:14485` (seednode); `eu-east.trrxitte.com` and `xte.trrxitte.com` remain usable alternatives.
 
 A separate review of `main` at `34d9508` (model grok-build-0.1, then checked by hand against that tree) is cross-checked below. Severities are that review's. Each item was re-checked in this tree before the fix.
 
@@ -25,7 +25,7 @@ No Critical or High issues were confirmed. An earlier pass in this branch rated 
 
 ## F1 detail
 
-Port 9999 is the cryptonote-nodejs-pool SSL port in the pool README template. A checked-in pool `config.json` has been seen with that port's `ssl` flag false, and this environment could not complete a live handshake to `xte.trrxitte.com:9999`, so TLS is optional. The box starts checked when the port is 9999 and the user has not chosen yet. Unchecking it speaks cleartext to that same configured host. TLS is 1.2 or 1.3, system trust anchors only, HTTPS endpoint identification, SNI, and ciphers containing `NULL`, `ANON`, `EXPORT`, `RC4`, `DES`, or `MD5` are dropped.
+Port 9999 is the cryptonote-nodejs-pool SSL port in the pool README template. A checked-in pool `config.json` has been seen with that port's `ssl` flag false, and this environment could not complete a live handshake to `xte.trrxitte.com:9999` or `main.trrxitte.com:9999`, so TLS is optional. The box starts checked when the port is 9999 and the user has not chosen yet. Unchecking it speaks cleartext to that same configured host. TLS is 1.2 or 1.3, system trust anchors only, HTTPS endpoint identification, SNI, and ciphers containing `NULL`, `ANON`, `EXPORT`, `RC4`, `DES`, or `MD5` are dropped.
 
 The network security config cannot list an IP address or a host the user types at runtime. `HttpURLConnection` therefore follows the allowlist. `DaemonRpcClient` uses it when `NetworkSecurityPolicy.isCleartextTrafficPermitted(host)` is true. Otherwise it opens a socket only to the already-validated host and port, writes a single `POST /json_rpc`, and parses the response itself. That parser rejects 3xx responses, `Transfer-Encoding: chunked`, and bodies over 256 KiB.
 

@@ -1,7 +1,7 @@
 {
   "modes": {
     "pool": {
-      "host": "xte.trrxitte.com",
+      "host": "main.trrxitte.com",
       "ports": {
         "3333": "Low-end / mobile (diff ~100000)",
         "4444": "Mid-range (diff ~1000000)",
@@ -13,7 +13,7 @@
       "password": "x"
     },
     "seednode": {
-      "host": "eu-east.trrxitte.com",
+      "host": "main.trrxitte.com",
       "port": 14485,
       "endpoint": "POST http://HOST:PORT/json_rpc",
       "methods": ["getblocktemplate", "submitblock"],

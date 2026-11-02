@@ -12,7 +12,7 @@ Android CPU miner for **traaitt [XTE]** (Cryptonote) using **Chukwa** (Argon2id)
 
 | Setting | Default |
 |--------|---------|
-| Host | `xte.trrxitte.com` |
+| Host | `main.trrxitte.com` |
 | Port | `3333` (also 4444 / 5555 / 7777). `9999` offers TLS |
 | Algo | `chukwa` |
 | Password | `x` (or your worker name) |
@@ -27,7 +27,7 @@ Sites: [traaitt.com](https://traaitt.com) · [mine.traaitt.com](https://mine.tra
 
 | Setting | Default |
 |--------|---------|
-| Host | `eu-east.trrxitte.com` |
+| Host | `main.trrxitte.com` |
 | Port | `14485` (daemon `--rpc-bind-port`) |
 | Endpoint | `POST http://HOST:PORT/json_rpc` |
 | Wallet | required (coinbase address) |

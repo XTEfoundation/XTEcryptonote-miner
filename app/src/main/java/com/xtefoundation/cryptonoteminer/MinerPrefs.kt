@@ -53,9 +53,9 @@ class MinerPrefs(ctx: Context) {
         set(v) = p.edit().putBoolean(KEY_POOL_TLS, v).apply()
 
     companion object {
-        const val DEFAULT_HOST = "xte.trrxitte.com"
+        const val DEFAULT_HOST = "main.trrxitte.com"
         const val DEFAULT_PORT = 3333
-        const val DEFAULT_SEED_HOST = "eu-east.trrxitte.com"
+        const val DEFAULT_SEED_HOST = "main.trrxitte.com"
         const val DEFAULT_SEED_PORT = 14485
         const val DEFAULT_PASS = "x"
         private const val KEY_MODE = "mining_mode"

@@ -26,7 +26,7 @@ class MinerValidationTest {
 
     @Test
     fun rejectsWalletInjectionAndShortPrefixes() {
-        assertFalse(MinerValidation.isWallet("xte.trrxitte.com"))
+        assertFalse(MinerValidation.isWallet("main.trrxitte.com"))
         assertFalse(MinerValidation.isWallet("XT"))
         assertFalse(MinerValidation.isWallet("XT" + "1".repeat(10)))
         assertFalse(MinerValidation.isWallet("XT" + "0".repeat(93)))
@@ -43,16 +43,16 @@ class MinerValidationTest {
 
     @Test
     fun hostAndPortDefaults() {
-        assertEquals("xte.trrxitte.com", MinerValidation.normalizeHost("xte.trrxitte.com"))
-        assertEquals("eu-east.trrxitte.com", MinerValidation.normalizeHost("eu-east.trrxitte.com."))
+        assertEquals("main.trrxitte.com", MinerValidation.normalizeHost("main.trrxitte.com"))
+        assertEquals("main.trrxitte.com", MinerValidation.normalizeHost("main.trrxitte.com."))
         assertEquals("localhost", MinerValidation.normalizeHost("localhost"))
         assertEquals("127.0.0.1", MinerValidation.normalizeHost("127.0.0.1"))
         assertEquals("::1", MinerValidation.normalizeHost("[::1]"))
         assertEquals("2001:db8::1", MinerValidation.normalizeHost("2001:db8::1"))
-        assertNull(MinerValidation.normalizeHost("xte.trrxitte.com:3333"))
-        assertNull(MinerValidation.normalizeHost("http://xte.trrxitte.com"))
-        assertNull(MinerValidation.normalizeHost("xte.trrxitte.com/json_rpc"))
-        assertNull(MinerValidation.normalizeHost("user@xte.trrxitte.com"))
+        assertNull(MinerValidation.normalizeHost("main.trrxitte.com:3333"))
+        assertNull(MinerValidation.normalizeHost("http://main.trrxitte.com"))
+        assertNull(MinerValidation.normalizeHost("main.trrxitte.com/json_rpc"))
+        assertNull(MinerValidation.normalizeHost("user@main.trrxitte.com"))
         assertNull(MinerValidation.normalizeHost("bad host"))
         assertNull(MinerValidation.normalizeHost("bad\nhost"))
         assertNull(MinerValidation.normalizeHost("-bad.com"))
@@ -62,7 +62,7 @@ class MinerValidationTest {
 
         val err = MinerValidation.validateConfig(
             poolMode = true,
-            host = "xte.trrxitte.com",
+            host = "main.trrxitte.com",
             port = 3333,
             wallet = example,
             password = "x",
@@ -71,22 +71,22 @@ class MinerValidationTest {
         assertNull(err)
         assertEquals(
             MinerValidation.ERR_PORT,
-            MinerValidation.validateConfig(true, "xte.trrxitte.com", 0, example, "x", 2)
+            MinerValidation.validateConfig(true, "main.trrxitte.com", 0, example, "x", 2)
         )
         assertEquals(
             MinerValidation.ERR_THREADS,
-            MinerValidation.validateConfig(true, "xte.trrxitte.com", 3333, example, "x", 0)
+            MinerValidation.validateConfig(true, "main.trrxitte.com", 3333, example, "x", 0)
         )
         assertEquals(
             MinerValidation.ERR_THREADS,
-            MinerValidation.validateConfig(false, "eu-east.trrxitte.com", 14485, example, "x", 17)
+            MinerValidation.validateConfig(false, "main.trrxitte.com", 14485, example, "x", 17)
         )
         assertEquals(
             MinerValidation.ERR_PASSWORD,
-            MinerValidation.validateConfig(true, "xte.trrxitte.com", 3333, example, "bad\npass", 2)
+            MinerValidation.validateConfig(true, "main.trrxitte.com", 3333, example, "bad\npass", 2)
         )
         assertNull(
-            MinerValidation.validateConfig(false, "eu-east.trrxitte.com", 14485, example, "bad\npass", 2)
+            MinerValidation.validateConfig(false, "main.trrxitte.com", 14485, example, "bad\npass", 2)
         )
     }
 

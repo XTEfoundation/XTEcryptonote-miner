@@ -21,7 +21,7 @@ import kotlin.concurrent.thread
 
 /**
  * Cryptonote-nodejs-pool stratum (login / job / submit / keepalived).
- * XTE pool at xte.trrxitte.com uses this CN login protocol (not Bitcoin subscribe).
+ * XTE pool at main.trrxitte.com uses this CN login protocol (not Bitcoin subscribe).
  *
  * TLS is optional. The UI defaults it on for port 9999 (the pool's documented SSL
  * port) and the user can turn it off. A dropped socket reconnects with backoff

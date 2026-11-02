@@ -1,15 +1,24 @@
 package com.xtefoundation.cryptonoteminer
 
+import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.View
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import com.xtefoundation.cryptonoteminer.wallet.WalletActivity
+import com.xtefoundation.cryptonoteminer.wallet.WalletStore
 import com.google.android.material.textfield.TextInputLayout
 
 class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
@@ -27,6 +36,7 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
     private lateinit var etWallet: EditText
     private lateinit var etPass: EditText
     private lateinit var etThreads: EditText
+    private lateinit var cbPoolTls: CheckBox
     private lateinit var btnStartStop: Button
     private lateinit var tvStatus: TextView
     private lateinit var tvHashrate: TextView
@@ -34,8 +44,22 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
     private lateinit var tvLog: TextView
     private lateinit var scrollLog: ScrollView
 
+    private lateinit var btnWallet: Button
+    private lateinit var walletStore: WalletStore
+
+    private val walletResult = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        val addr = r.data?.getStringExtra(WalletActivity.EXTRA_ADDRESS)
+        if (r.resultCode == Activity.RESULT_OK && addr != null && MinerValidation.isWallet(addr) && !engine.isMining()) {
+            etWallet.setText(addr)
+            prefs.wallet = addr
+            onLog("Mining address set from the on-device wallet.")
+        }
+    }
+
     private val logBuf = StringBuilder()
     private var applyingMode = false
+    private var tlsUserSet = false
+    private var suppressTls = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,12 +78,16 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
         etWallet = findViewById(R.id.etWallet)
         etPass = findViewById(R.id.etPass)
         etThreads = findViewById(R.id.etThreads)
+        cbPoolTls = findViewById(R.id.cbPoolTls)
         btnStartStop = findViewById(R.id.btnStartStop)
         tvStatus = findViewById(R.id.tvStatus)
         tvHashrate = findViewById(R.id.tvHashrate)
         tvShares = findViewById(R.id.tvShares)
         tvLog = findViewById(R.id.tvLog)
         scrollLog = findViewById(R.id.scrollLog)
+        btnWallet = findViewById(R.id.btnWallet)
+        walletStore = WalletStore(this)
+        btnWallet.setOnClickListener { openWallet(WalletActivity.MODE_VIEW) }
 
         etWallet.setText(prefs.wallet)
         etPass.setText(prefs.password)
@@ -73,8 +101,24 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
         }
         etHost.setText(prefs.poolHost)
         etPort.setText(prefs.poolPort.toString())
+        loadTlsFor(prefs.mode, prefs.poolPort)
         applyModeUi(prefs.mode, fillPresets = false)
         applyingMode = false
+
+        cbPoolTls.setOnCheckedChangeListener { _, _ ->
+            if (!suppressTls) tlsUserSet = true
+        }
+        etPort.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                if (tlsUserSet || suppressTls) return
+                suppressTls = true
+                val port = s?.toString()?.trim()?.toIntOrNull() ?: -1
+                cbPoolTls.isChecked = MinerPrefs.defaultTlsFor(currentMode(), port)
+                suppressTls = false
+            }
+        })
 
         rgMode.setOnCheckedChangeListener { _, checkedId ->
             if (applyingMode) return@setOnCheckedChangeListener
@@ -88,32 +132,90 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
                 setFieldsEnabled(true)
                 btnStartStop.text = getString(R.string.start)
             } else {
-                savePrefs()
+                val mode = currentMode()
+                val hostRaw = etHost.text.toString().trim().ifEmpty { MinerPrefs.defaultHostFor(mode) }
+                val host = MinerValidation.normalizeHost(hostRaw)
+                val portText = etPort.text.toString().trim()
+                val port = if (portText.isEmpty()) {
+                    MinerPrefs.defaultPortFor(mode)
+                } else {
+                    portText.toIntOrNull()
+                }
                 val wallet = etWallet.text.toString().trim()
-                if (wallet.length < 10) {
-                    Toast.makeText(this, R.string.err_wallet, Toast.LENGTH_LONG).show()
+                val pass = etPass.text.toString().ifEmpty { MinerPrefs.DEFAULT_PASS }
+                val threadsText = etThreads.text.toString().trim()
+                val threads = if (threadsText.isEmpty()) {
+                    Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
+                } else {
+                    threadsText.toIntOrNull()
+                }
+                val err = when {
+                    host == null -> MinerValidation.ERR_HOST
+                    port == null || port !in 1..65535 -> MinerValidation.ERR_PORT
+                    threads == null || threads !in 1..16 -> MinerValidation.ERR_THREADS
+                    else -> MinerValidation.validateConfig(
+                        mode == MiningMode.POOL, host, port, wallet, pass, threads
+                    )
+                }
+                if (err != null || host == null || port == null || threads == null) {
+                    Toast.makeText(this, err ?: MinerValidation.ERR_HOST, Toast.LENGTH_LONG).show()
                     return@setOnClickListener
                 }
-                val mode = currentMode()
-                val host = etHost.text.toString().trim()
-                    .ifEmpty { MinerPrefs.defaultHostFor(mode) }
-                val port = etPort.text.toString().toIntOrNull()
-                    ?: MinerPrefs.defaultPortFor(mode)
-                val pass = etPass.text.toString().ifEmpty { MinerPrefs.DEFAULT_PASS }
-                val threads = etThreads.text.toString().toIntOrNull()?.coerceIn(1, 16)
-                    ?: Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
+                etHost.setText(host)
+                etPort.setText(port.toString())
+                etThreads.setText(threads.toString())
+                prefs.mode = mode
+                prefs.poolHost = host
+                prefs.poolPort = port
+                prefs.wallet = wallet
+                prefs.password = etPass.text.toString()
+                prefs.threads = threads
+                val useTls = cbPoolTls.isChecked
+                if (mode == MiningMode.POOL) prefs.poolTls = useTls else prefs.seedTls = useTls
 
                 setFieldsEnabled(false)
                 btnStartStop.text = getString(R.string.stop)
-                engine.start(mode, host, port, wallet, pass, threads)
+                val started = engine.start(mode, host, port, wallet, pass, threads, useTls)
+                if (!started) {
+                    setFieldsEnabled(true)
+                    btnStartStop.text = getString(R.string.start)
+                }
             }
         }
+
+        if (savedInstanceState == null) firstRunWalletPrompt()
 
         onStats("Idle", 0.0, 0, 0, 0)
         onLog("XTE Miner ready. Enter XT… wallet and tap Start. No mining until you start.")
         onLog("Algo: Chukwa (Argon2id t=3 m=512KiB p=1).")
-        onLog("Pool: ${MinerPrefs.DEFAULT_HOST}:${MinerPrefs.DEFAULT_PORT} (CN login/job/submit)")
-        onLog("Seednode: ${MinerPrefs.DEFAULT_SEED_HOST}:${MinerPrefs.DEFAULT_SEED_PORT} (daemon JSON-RPC)")
+        onLog("Default: solo mining on seednode https://${MinerPrefs.DEFAULT_SEED_HOST}:${MinerPrefs.DEFAULT_SEED_PORT}/json_rpc (TLS)")
+        onLog("Alternative: pool ${MinerPrefs.DEFAULT_HOST}:${MinerPrefs.DEFAULT_PORT}. Plain daemon RPC: port ${MinerPrefs.SEED_PLAIN_PORT} with TLS off.")
+    }
+
+    private fun openWallet(mode: String) {
+        walletResult.launch(Intent(this, WalletActivity::class.java).putExtra(WalletActivity.EXTRA_MODE, mode))
+    }
+
+    /** No mining address yet: offer to create or restore a wallet, or type an address. */
+    private fun firstRunWalletPrompt() {
+        if (walletStore.hasWallet() && !walletStore.isBackedUp()) {
+            // Created earlier but the seed backup was never confirmed.
+            openWallet(WalletActivity.MODE_BACKUP)
+            return
+        }
+        if (prefs.wallet.isNotEmpty()) return
+        if (walletStore.hasWallet()) {
+            walletStore.address()?.let { etWallet.setText(it); prefs.wallet = it }
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Mining address")
+            .setMessage("Solo-mined blocks pay an XTE address. Create a new wallet on this phone (keys stay on " +
+                "the device), restore one from its 25-word seed, or enter an address yourself.")
+            .setPositiveButton("Create wallet") { _, _ -> openWallet(WalletActivity.MODE_CREATE) }
+            .setNeutralButton("Restore from seed") { _, _ -> openWallet(WalletActivity.MODE_RESTORE) }
+            .setNegativeButton("Enter address manually") { _, _ -> etWallet.requestFocus() }
+            .show()
     }
 
     private fun currentMode(): MiningMode =
@@ -122,21 +224,25 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
     private fun applyModeUi(mode: MiningMode, fillPresets: Boolean) {
         val seed = mode == MiningMode.SEEDNODE
         tilPass.visibility = if (seed) View.GONE else View.VISIBLE
+        cbPoolTls.text = getString(if (seed) R.string.seed_tls else R.string.pool_tls)
         tilHost.hint = if (seed) getString(R.string.pool_host) + " (daemon)" else getString(R.string.pool_host)
         if (fillPresets) {
             etHost.setText(MinerPrefs.defaultHostFor(mode))
             etPort.setText(MinerPrefs.defaultPortFor(mode).toString())
+            loadTlsFor(mode, MinerPrefs.defaultPortFor(mode))
         }
     }
 
-    private fun savePrefs() {
-        prefs.mode = currentMode()
-        prefs.poolHost = etHost.text.toString()
-        prefs.poolPort = etPort.text.toString().toIntOrNull()
-            ?: MinerPrefs.defaultPortFor(currentMode())
-        prefs.wallet = etWallet.text.toString()
-        prefs.password = etPass.text.toString()
-        prefs.threads = etThreads.text.toString().toIntOrNull() ?: prefs.threads
+    /** TLS box: the stored choice for this mode, else the default for the port. */
+    private fun loadTlsFor(mode: MiningMode, port: Int) {
+        suppressTls = true
+        tlsUserSet = if (mode == MiningMode.SEEDNODE) prefs.isSeedTlsSet() else prefs.isPoolTlsSet()
+        cbPoolTls.isChecked = when {
+            !tlsUserSet -> MinerPrefs.defaultTlsFor(mode, port)
+            mode == MiningMode.SEEDNODE -> prefs.seedTls
+            else -> prefs.poolTls
+        }
+        suppressTls = false
     }
 
     private fun setFieldsEnabled(enabled: Boolean) {
@@ -147,6 +253,8 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
         etWallet.isEnabled = enabled
         etPass.isEnabled = enabled
         etThreads.isEnabled = enabled
+        cbPoolTls.isEnabled = enabled
+        btnWallet.isEnabled = enabled
     }
 
     override fun onStats(status: String, hashrate: Double, accepted: Long, rejected: Long, hashes: Long) {

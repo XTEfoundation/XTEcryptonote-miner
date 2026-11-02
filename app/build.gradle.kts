@@ -49,8 +49,8 @@ android {
         applicationId = "com.xtefoundation.cryptonoteminer"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 6
+        versionName = "1.3.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -79,7 +79,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -99,6 +100,10 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     externalNativeBuild {
@@ -122,4 +127,11 @@ dependencies {
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+    // Ed25519 group/scalar arithmetic for wallet keys (ref10 port, CC0): net.i2p.crypto:eddsa.
+    implementation("net.i2p.crypto:eddsa:0.3.0")
+    // QR code for the wallet address (encoder only).
+    implementation("com.google.zxing:core:3.5.3")
+    testImplementation("junit:junit:4.13.2")
+    // Test-only cross-checks: Keccak-256 and Argon2id (Chukwa) reference implementations.
+    testImplementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 }

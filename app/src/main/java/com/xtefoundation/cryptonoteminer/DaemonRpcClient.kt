@@ -1,14 +1,17 @@
 package com.xtefoundation.cryptonoteminer
 
+import android.security.NetworkSecurityPolicy
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.InetAddress
-import java.net.URL
+import java.net.URI
+import javax.net.ssl.HttpsURLConnection
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -20,147 +23,221 @@ import kotlin.concurrent.thread
  *
  * Methods: [getblocktemplate], [submitblock] — matches traaitt
  * `RpcServer::on_getblocktemplate` / `on_submitblock`.
+ *
+ * With TLS (the default, `https://main.trrxitte.com:443/json_rpc`) requests go through
+ * [HttpsURLConnection] with the platform's default socket factory and hostname
+ * verifier: system CAs only (see network_security_config), normal hostname checks,
+ * no custom trust manager. Without TLS the daemon protocol is cleartext HTTP: hosts
+ * allowed by the network security config use [HttpURLConnection]; any other
+ * configured host is contacted with a direct socket that only POSTs `/json_rpc`.
+ * In every case responses are size-capped and redirects are not followed.
+ *
+ * Each template is parsed strictly by [CryptoNoteBlock] and turned into a [SoloJob]:
+ * the merge-mining tag root is filled in exactly like traaitt's own solo miner
+ * (`MinerManager::adjustMergeMiningTag`), and the Chukwa input is the parent-block
+ * hashing blob (`CachedBlock::getParentBlockHashingBinaryArray(true)`), nonce at
+ * offset 39. A found nonce is re-checked with the exact `check_hash` rule and
+ * written into the full block, which is sent with `submitblock ["<hex>"]`.
+ * A new job is issued when the height or previous block changes and every
+ * [JOB_REFRESH_MS] (fresh timestamp); jobs for an old previous block are dropped.
  */
 class DaemonRpcClient(
-    private val listener: Listener
+    private val listener: Listener,
+    /** Recomputes Chukwa for a hashing blob (independent of the worker that found it). */
+    private val powVerifier: ((ByteArray) -> ByteArray?)? = null
 ) {
     interface Listener {
         fun onStatus(status: String)
-        /** New template: mine [blobHex] with [target64]; [jobId] identifies the template. */
-        fun onTemplate(jobId: String, blobHex: String, target64: Long, height: Long, difficulty: Long)
+        /** A new solo job. Replaces any previous job; hash [SoloJob.hashingBlob]. */
+        fun onSoloJob(job: SoloJob)
         fun onBlockAccepted()
         fun onBlockRejected(reason: String)
         fun onError(message: String)
     }
 
     private val running = AtomicBoolean(false)
+    private val generation = AtomicInteger(0)
     private val reqId = AtomicInteger(1)
     private val pollMs = AtomicLong(POLL_INTERVAL_MS)
     @Volatile private var host: String = ""
     @Volatile private var port: Int = 0
     @Volatile private var wallet: String = ""
-    @Volatile private var currentBlobHex: String = ""
-    @Volatile private var currentJobId: String = ""
+    @Volatile private var useTls: Boolean = true
     @Volatile private var lastHeight: Long = -1L
-    @Volatile private var lastBlobHex: String = ""
+    @Volatile private var lastDifficulty: Long = -1L
+    @Volatile private var lastPrev: String = ""
+    @Volatile private var lastJobAtMs: Long = 0L
     private var pollThread: Thread? = null
+    private val jobCounter = AtomicLong(0)
+    private val jobsLock = Any()
+    private val jobs = LinkedHashMap<String, SoloJob>()
+    private val submitted = HashSet<String>()
+    private val forceRefresh = AtomicBoolean(false)
+    private val accepted = AtomicLong(0)
+    private val rejected = AtomicLong(0)
+    @Volatile private var submitExecutor: ExecutorService = newSubmitExecutor()
 
-    fun connect(host: String, port: Int, wallet: String) {
-        disconnect()
-        this.host = host.trim()
+    val acceptedBlocks: Long get() = accepted.get()
+    val rejectedBlocks: Long get() = rejected.get()
+
+    fun connect(host: String, port: Int, wallet: String, useTls: Boolean = MinerValidation.daemonUsesTls(port)) {
+        val hostNorm = MinerValidation.normalizeHost(host)
+        val walletNorm = wallet.trim()
+        if (hostNorm == null || port !in 1..65535 || !MinerValidation.isWallet(walletNorm)) {
+            listener.onError("Invalid seednode settings")
+            listener.onStatus("Disconnected")
+            return
+        }
+
+        val gen = generation.incrementAndGet()
+        running.set(false)
+        pollThread?.interrupt()
+        this.host = hostNorm
         this.port = port
-        this.wallet = wallet.trim()
+        this.wallet = walletNorm
+        this.useTls = useTls
+        resetJobs()
+        if (submitExecutor.isShutdown) submitExecutor = newSubmitExecutor()
         running.set(true)
-        listener.onStatus("Connecting to seednode $host:$port…")
+        val scheme = if (useTls) "https" else "http"
+        listener.onStatus("Connecting to seednode $scheme://$hostNorm:$port…")
         pollThread = thread(name = "daemon-rpc-poll", isDaemon = true) {
-            // DNS check first so UI gets a clear message when the host does not resolve
             try {
-                listener.onStatus("Resolving $host…")
-                InetAddress.getByName(host)
+                listener.onStatus("Resolving $hostNorm…")
+                InetAddress.getByName(hostNorm)
             } catch (e: Exception) {
-                Log.e(TAG, "DNS failed for $host", e)
-                listener.onError("DNS failed for $host: ${e.message}")
+                if (generation.get() != gen) return@thread
+                Log.e(TAG, "DNS failed for $hostNorm (${e.javaClass.simpleName})")
+                listener.onError("DNS failed for $hostNorm")
                 listener.onStatus("Disconnected (DNS)")
                 running.set(false)
                 return@thread
             }
+            if (generation.get() != gen || !running.get()) return@thread
             listener.onStatus("Polling getblocktemplate…")
             var failures = 0
-            while (running.get()) {
+            while (running.get() && generation.get() == gen) {
                 try {
                     pollTemplate()
                     failures = 0
                 } catch (e: Exception) {
+                    if (generation.get() != gen) break
                     failures++
-                    Log.e(TAG, "poll failed", e)
-                    val msg = e.message ?: e.javaClass.simpleName
-                    listener.onError("RPC error: $msg")
-                    if (failures == 1) {
-                        listener.onStatus("Waiting for daemon…")
-                    }
+                    val safe = MinerValidation.clip(
+                        MinerValidation.redact(e.message, listOf(walletNorm)),
+                        160
+                    )
+                    Log.e(TAG, "poll failed: ${e.javaClass.simpleName}: $safe")
+                    listener.onError("RPC error: $safe")
+                    if (failures == 1) listener.onStatus("Waiting for daemon…")
                 }
-                sleepInterruptible(pollMs.get())
+                if (!running.get() || generation.get() != gen) break
+                if (forceRefresh.getAndSet(false)) continue
+                sleepInterruptible(pollMs.get().coerceAtLeast(MIN_POLL_MS))
             }
         }
     }
 
     /**
-     * Rebuild the current blocktemplate with [nonce] (LE at Cryptonote offset 39)
-     * and POST [submitblock] as a JSON array of one hex string.
+     * Called from the native worker thread with a nonce whose Chukwa hash passed the
+     * 64-bit prefilter. The exact difficulty check, block assembly and network I/O run
+     * on a single submit thread so the hashing threads are never blocked.
      */
-    fun submitBlock(jobId: String, nonce: Int) {
-        if (jobId != currentJobId) {
-            Log.w(TAG, "stale job $jobId (current=$currentJobId)")
+    fun submitBlock(jobId: String, nonce: Int, hash: ByteArray) {
+        if (!running.get()) return
+        if (!MinerValidation.isJobId(jobId) || hash.size != 32) {
+            listener.onBlockRejected("invalid share callback")
             return
         }
-        val blobHex = currentBlobHex
-        if (blobHex.isEmpty()) {
-            listener.onError("Submit failed: no active template")
-            return
-        }
-        thread(name = "daemon-rpc-submit", isDaemon = true) {
-            try {
-                val blob = MiningEngine.hexToBytes(blobHex)
-                if (blob.size < NONCE_OFFSET + 4) {
-                    listener.onBlockRejected("blob too short for nonce")
-                    return@thread
-                }
-                blob[NONCE_OFFSET] = (nonce and 0xff).toByte()
-                blob[NONCE_OFFSET + 1] = ((nonce shr 8) and 0xff).toByte()
-                blob[NONCE_OFFSET + 2] = ((nonce shr 16) and 0xff).toByte()
-                blob[NONCE_OFFSET + 3] = ((nonce shr 24) and 0xff).toByte()
-                val completedHex = MiningEngine.bytesToHex(blob)
-
-                val id = reqId.getAndIncrement()
-                val body = JSONObject()
-                    .put("jsonrpc", "2.0")
-                    .put("id", id)
-                    .put("method", "submitblock")
-                    .put("params", JSONArray().put(completedHex))
-
-                val resp = postJsonRpc(body)
-                if (resp.has("error") && !resp.isNull("error")) {
-                    val err = resp.get("error")
-                    val msg = when (err) {
-                        is JSONObject -> err.optString("message", err.toString())
-                        else -> err.toString()
-                    }
-                    listener.onBlockRejected(msg)
-                    // Refresh template after reject
-                    try { pollTemplate() } catch (_: Exception) {}
-                    return@thread
-                }
-                val result = resp.opt("result")
-                val status = when (result) {
-                    is JSONObject -> result.optString("status", "")
-                    is String -> result
-                    else -> ""
-                }
-                if (status.equals("OK", true) || status.isEmpty() && result != null) {
-                    listener.onBlockAccepted()
-                    // Force new template after accepted block
-                    lastHeight = -1L
-                    lastBlobHex = ""
-                    try { pollTemplate() } catch (_: Exception) {}
-                } else {
-                    listener.onBlockRejected(status.ifEmpty { "unexpected response" })
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "submit failed", e)
-                listener.onBlockRejected(e.message ?: "submit failed")
-            }
+        val gen = generation.get()
+        val hashCopy = hash.copyOf()
+        try {
+            submitExecutor.execute { doSubmit(gen, jobId, nonce, hashCopy) }
+        } catch (_: RejectedExecutionException) {
+            // Disconnected while the share was in flight.
         }
     }
 
+    private fun doSubmit(gen: Int, jobId: String, nonce: Int, hash: ByteArray) {
+        if (generation.get() != gen || !running.get()) return
+        val job = synchronized(jobsLock) {
+            val j = jobs[jobId]
+            if (j != null && !submitted.add(jobId)) null else j
+        }
+        if (job == null) {
+            Log.i(TAG, "dropping stale or duplicate solo share")
+            return
+        }
+        val pow = powVerifier?.let { verify ->
+            val again = verify(job.hashingBlobWithNonce(nonce))
+            if (again == null || !again.contentEquals(hash)) {
+                synchronized(jobsLock) { submitted.remove(jobId) }
+                Log.e(TAG, "solo share failed PoW re-verification")
+                listener.onError("Discarded a share that failed PoW re-check")
+                return
+            }
+            again
+        } ?: hash
+        if (!CryptoNoteBlock.checkHash(pow, job.difficulty)) {
+            // Prefilter hit that does not meet the full 256-bit difficulty.
+            synchronized(jobsLock) { submitted.remove(jobId) }
+            return
+        }
+        val blockHex = MinerValidation.bytesToHex(job.blockWithNonce(nonce))
+        listener.onStatus("Block candidate at height ${job.height}, submitting…")
+        try {
+            val body = JSONObject()
+                .put("jsonrpc", "2.0")
+                .put("id", reqId.getAndIncrement())
+                .put("method", "submitblock")
+                .put("params", JSONArray().put(blockHex))
+            val resp = postJsonRpc(body, MAX_SUBMIT_REQUEST_BYTES)
+            if (generation.get() != gen) return
+            if (resp.has("error") && !resp.isNull("error")) {
+                rejected.incrementAndGet()
+                listener.onBlockRejected(errorText(resp.get("error")))
+            } else {
+                val status = resp.optJSONObject("result")?.optString("status", "") ?: ""
+                if (status.equals("OK", ignoreCase = true)) {
+                    accepted.incrementAndGet()
+                    Log.i(TAG, "block accepted height=${job.height}")
+                    listener.onBlockAccepted()
+                } else {
+                    rejected.incrementAndGet()
+                    listener.onBlockRejected("status ${MinerValidation.clip(status, 40)}")
+                }
+            }
+        } catch (e: Exception) {
+            if (generation.get() != gen) return
+            rejected.incrementAndGet()
+            val safe = MinerValidation.clip(MinerValidation.redact(e.message, listOf(wallet)), 160)
+            Log.e(TAG, "submitblock failed: ${e.javaClass.simpleName}: $safe")
+            listener.onBlockRejected("submit failed: $safe")
+        }
+        // Whatever happened, the chain tip has probably moved: fetch new work now.
+        forceRefresh.set(true)
+        pollThread?.interrupt()
+    }
+
     fun disconnect() {
+        generation.incrementAndGet()
         running.set(false)
         pollThread?.interrupt()
         pollThread = null
-        currentBlobHex = ""
-        currentJobId = ""
-        lastHeight = -1L
-        lastBlobHex = ""
+        resetJobs()
+        submitExecutor.shutdownNow()
         listener.onStatus("Disconnected")
+    }
+
+    private fun resetJobs() {
+        lastHeight = -1L
+        lastDifficulty = -1L
+        lastPrev = ""
+        lastJobAtMs = 0L
+        synchronized(jobsLock) {
+            jobs.clear()
+            submitted.clear()
+        }
     }
 
     private fun pollTemplate() {
@@ -174,73 +251,139 @@ class DaemonRpcClient(
             .put("method", "getblocktemplate")
             .put("params", params)
 
-        val resp = postJsonRpc(body)
+        val resp = postJsonRpc(body, MAX_REQUEST_BYTES)
         if (resp.has("error") && !resp.isNull("error")) {
-            val err = resp.get("error")
-            val msg = when (err) {
-                is JSONObject -> err.optString("message", err.toString())
-                else -> err.toString()
-            }
-            throw RuntimeException(msg)
+            throw IOException(errorText(resp.get("error")))
         }
         val result = resp.optJSONObject("result")
-            ?: throw RuntimeException("empty getblocktemplate result")
+            ?: throw IOException("empty getblocktemplate result")
 
         val status = result.optString("status", "OK")
         if (status.isNotEmpty() && !status.equals("OK", true)) {
-            throw RuntimeException("getblocktemplate status=$status")
+            throw IOException("getblocktemplate status rejected")
         }
 
-        val blobHex = result.optString("blocktemplate_blob", "")
-        if (blobHex.isEmpty()) throw RuntimeException("missing blocktemplate_blob")
+        val blobHex = result.optString("blocktemplate_blob", "").trim()
+        if (!isBoundedHex(blobHex, MinerValidation.MAX_BLOCK_BLOB_BYTES)) {
+            throw IOException("rejected block template")
+        }
 
         val height = parseUInt64(result, "height")
         val difficulty = parseUInt64(result, "difficulty")
-        if (difficulty == 0L) throw RuntimeException("difficulty is 0")
+        if (difficulty == 0L) throw IOException("difficulty is 0")
+        if (MinerValidation.targetFromDifficulty(difficulty) == 0L) throw IOException("bad difficulty")
 
-        if (height == lastHeight && blobHex == lastBlobHex) {
-            return // unchanged
+        val template = MinerValidation.hexToBytes(blobHex, MinerValidation.MAX_BLOCK_BLOB_BYTES)
+        val now = System.currentTimeMillis()
+        val jobId = "solo-${jobCounter.incrementAndGet()}"
+        val job = try {
+            SoloJob.fromTemplate(jobId, template, height, difficulty)
+        } catch (e: IllegalArgumentException) {
+            throw IOException("unusable block template: ${MinerValidation.clip(e.message ?: "invalid", 80)}")
         }
+        val prev = MinerValidation.bytesToHex(job.previousBlockHash)
+        val tipChanged = height != lastHeight || prev != lastPrev
+        val stale = now - lastJobAtMs >= JOB_REFRESH_MS
+        if (!tipChanged && difficulty == lastDifficulty && !stale) return
 
-        val target64 = targetFromDifficulty(difficulty)
-        if (target64 == 0L) throw RuntimeException("bad difficulty→target")
-
-        val jobId = "h${height}_${blobHex.take(16)}"
-        currentBlobHex = blobHex
-        currentJobId = jobId
+        synchronized(jobsLock) {
+            if (tipChanged) {
+                // Work on the old tip can no longer produce an acceptable block.
+                jobs.clear()
+                submitted.clear()
+            }
+            jobs[jobId] = job
+            while (jobs.size > MAX_LIVE_JOBS) jobs.remove(jobs.keys.first())
+        }
         lastHeight = height
-        lastBlobHex = blobHex
-
-        listener.onStatus("Seednode height=$height diff=$difficulty")
-        listener.onTemplate(jobId, blobHex, target64, height, difficulty)
+        lastDifficulty = difficulty
+        lastPrev = prev
+        lastJobAtMs = now
+        listener.onSoloJob(job)
+        listener.onStatus("Solo job height=$height diff=$difficulty")
     }
 
-    private fun postJsonRpc(body: JSONObject): JSONObject {
-        val url = URL("http://$host:$port/json_rpc")
-        val conn = (url.openConnection() as HttpURLConnection).apply {
+    private fun isBoundedHex(hex: String, maxBytes: Int): Boolean {
+        if (hex.isEmpty() || hex.length % 2 != 0) return false
+        if (hex.length / 2 > maxBytes) return false
+        return hex.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
+    }
+
+    private fun postJsonRpc(body: JSONObject, maxRequestBytes: Int): JSONObject {
+        val payload = body.toString().toByteArray(Charsets.UTF_8)
+        if (payload.size > maxRequestBytes) throw IOException("RPC request too large")
+        val bytes = if (useTls) {
+            postViaPlatform(payload, tls = true)
+        } else if (platformCleartextAllowed(host)) {
+            postViaPlatform(payload, tls = false)
+        } else {
+            CleartextJsonRpc.post(
+                host,
+                port,
+                "/json_rpc",
+                payload,
+                MinerValidation.MAX_RPC_BYTES,
+                CONNECT_TIMEOUT_MS,
+                READ_TIMEOUT_MS
+            )
+        }
+        val text = bytes.toString(Charsets.UTF_8).trim()
+        if (!text.startsWith("{")) throw IOException("Malformed RPC JSON")
+        return try {
+            JSONObject(text)
+        } catch (_: Exception) {
+            throw IOException("Malformed RPC JSON")
+        }
+    }
+
+    /** True when network_security_config permits cleartext HTTP to [host]. */
+    private fun platformCleartextAllowed(host: String): Boolean {
+        return try {
+            NetworkSecurityPolicy.getInstance().isCleartextTrafficPermitted(host)
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun postViaPlatform(payload: ByteArray, tls: Boolean): ByteArray {
+        val uri = URI(if (tls) "https" else "http", null, host, port, "/json_rpc", null, null)
+        val opened = uri.toURL().openConnection()
+        if (tls && opened !is HttpsURLConnection) throw IOException("TLS connection unavailable")
+        val conn = (opened as HttpURLConnection).apply {
             requestMethod = "POST"
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = READ_TIMEOUT_MS
+            instanceFollowRedirects = false
+            useCaches = false
             doInput = true
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", "application/json")
         }
         try {
-            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { w ->
-                w.write(body.toString())
-                w.flush()
-            }
+            conn.setFixedLengthStreamingMode(payload.size)
+            conn.outputStream.use { it.write(payload) }
             val code = conn.responseCode
-            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            val text = BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
-            if (code !in 200..299) {
-                throw RuntimeException("HTTP $code: ${text.take(200)}")
-            }
-            return JSONObject(text)
+            if (code in 300..399) throw IOException("redirect refused")
+            if (code !in 200..299) throw IOException("HTTP $code")
+            val announced = conn.contentLengthLong
+            if (announced > MinerValidation.MAX_RPC_BYTES) throw IOException("RPC response too large")
+            val stream = conn.inputStream ?: throw IOException("empty RPC body")
+            return BoundedReaders.readStream(stream, MinerValidation.MAX_RPC_BYTES)
         } finally {
             conn.disconnect()
         }
+    }
+
+    private fun errorText(err: Any): String {
+        val raw = when (err) {
+            is JSONObject -> {
+                val m = err.optString("message", "")
+                if (m.isNotEmpty()) m else "error"
+            }
+            else -> err.toString()
+        }
+        return MinerValidation.clip(MinerValidation.redact(raw, listOf(wallet)), 160)
     }
 
     private fun sleepInterruptible(ms: Long) {
@@ -253,34 +396,30 @@ class DaemonRpcClient(
 
     companion object {
         private const val TAG = "DaemonRpcClient"
-        private const val NONCE_OFFSET = 39
         private const val RESERVE_SIZE = 8
         private const val POLL_INTERVAL_MS = 4_000L
+        private const val MIN_POLL_MS = 1_000L
         private const val CONNECT_TIMEOUT_MS = 12_000
         private const val READ_TIMEOUT_MS = 20_000
+        private const val MAX_REQUEST_BYTES = 8 * 1024
+        private const val MAX_SUBMIT_REQUEST_BYTES = 2 * MinerValidation.MAX_BLOCK_BLOB_BYTES + 1024
+        /** Re-issue work with a fresh template timestamp even if the tip is unchanged. */
+        private const val JOB_REFRESH_MS = 30_000L
+        /** Recent jobs on the current tip that may still receive in-flight results. */
+        private const val MAX_LIVE_JOBS = 4
 
-        /**
-         * xmrig Job::setDiff / toDiff: target64 = (2^64 − 1) / difficulty
-         * (unsigned). Native hasher accepts shares where first 8 LE hash bytes < target64.
-         */
-        fun targetFromDifficulty(difficulty: Long): Long {
-            if (difficulty == 0L) return 0L
-            return java.lang.Long.divideUnsigned(-1L, difficulty)
+        private fun newSubmitExecutor(): ExecutorService = Executors.newSingleThreadExecutor { r ->
+            Thread(r, "daemon-rpc-submit").apply { isDaemon = true }
         }
 
+        fun targetFromDifficulty(difficulty: Long): Long = MinerValidation.targetFromDifficulty(difficulty)
+
         fun parseUInt64(obj: JSONObject, key: String): Long {
-            if (!obj.has(key) || obj.isNull(key)) return 0L
+            if (!obj.has(key) || obj.isNull(key)) throw IllegalArgumentException("missing $key")
             return when (val v = obj.get(key)) {
-                is String -> {
-                    val s = v.trim()
-                    if (s.startsWith("0x") || s.startsWith("0X")) {
-                        java.lang.Long.parseUnsignedLong(s.substring(2), 16)
-                    } else {
-                        java.lang.Long.parseUnsignedLong(s)
-                    }
-                }
-                is Number -> v.toLong()
-                else -> 0L
+                is String -> MinerValidation.parseUnsignedLongText(v)
+                is Number -> MinerValidation.unsignedLongFromNumber(v)
+                else -> throw IllegalArgumentException("bad $key")
             }
         }
     }

@@ -2,8 +2,12 @@
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="sharedpref" path="xte_miner.xml" />
+        <exclude domain="sharedpref" path="xte_wallet.xml" />
+        <exclude domain="file" path="wallet/" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="xte_miner.xml" />
+        <exclude domain="sharedpref" path="xte_wallet.xml" />
+        <exclude domain="file" path="wallet/" />
     </device-transfer>
 </data-extraction-rules>

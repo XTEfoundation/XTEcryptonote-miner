@@ -6,7 +6,19 @@ Android CPU miner for **traaitt [XTE]** (Cryptonote) using **Chukwa** (Argon2id)
 - Honest miner: **no developer fee**, no silent background mining — mining starts only after you enter a wallet and tap **Start**.
 - ABI: `arm64-v8a`, `armeabi-v7a` · minSdk 26 · targetSdk 34
 - Modes: **Solo / Seednode** (default: daemon JSON-RPC over HTTPS at `https://main.trrxitte.com/json_rpc`) and **Pool** (stratum)
+- **On-device XTE wallet** (v1.3.0): create or restore a wallet on the phone and mine to it. Keys never leave the device. No balance or send in this version.
 - Security notes and the hardening pass: [`SECURITY.md`](SECURITY.md)
+
+## Wallet (create / restore / show address)
+
+On first start, if no mining address is set, the app offers **Create wallet**, **Restore from seed**, or **Enter address manually**. The **XTE wallet on this phone** button opens it later.
+
+- **Create:** a random private spend key (`SecureRandom`, reduced mod l), view key = Keccak-256(spend) mod l, public keys = key·G, address with traaitt's prefix `1334` (`XT…`). The same deterministic scheme as traaitt's reference wallet, so the seed restores there too.
+- **Back up your seed:** right after creation the app shows the 25-word seed and will not continue until you confirm you wrote it down. **Write the 25 words on paper and keep them offline. They are the only way to recover the wallet. Anyone who has them can spend your coins.**
+- **Restore:** type the 25 words; the checksum word is verified.
+- **Show:** address with copy and QR; seed words only after a confirmation and your screen lock (if set).
+- **Not included:** this wallet only makes keys and an address. It cannot show a balance or send coins. To spend mined coins, restore the seed in a full XTE wallet.
+- Storage: the spend key is encrypted with an Android Keystore AES-256-GCM key (StrongBox when available) in app-private storage, excluded from backups. Details in [`SECURITY.md`](SECURITY.md#on-device-wallet).
 
 ## Pool defaults
 

@@ -1,5 +1,7 @@
 package com.xtefoundation.cryptonoteminer
 
+import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -12,7 +14,11 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import com.xtefoundation.cryptonoteminer.wallet.WalletActivity
+import com.xtefoundation.cryptonoteminer.wallet.WalletStore
 import com.google.android.material.textfield.TextInputLayout
 
 class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
@@ -37,6 +43,18 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
     private lateinit var tvShares: TextView
     private lateinit var tvLog: TextView
     private lateinit var scrollLog: ScrollView
+
+    private lateinit var btnWallet: Button
+    private lateinit var walletStore: WalletStore
+
+    private val walletResult = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        val addr = r.data?.getStringExtra(WalletActivity.EXTRA_ADDRESS)
+        if (r.resultCode == Activity.RESULT_OK && addr != null && MinerValidation.isWallet(addr) && !engine.isMining()) {
+            etWallet.setText(addr)
+            prefs.wallet = addr
+            onLog("Mining address set from the on-device wallet.")
+        }
+    }
 
     private val logBuf = StringBuilder()
     private var applyingMode = false
@@ -67,6 +85,9 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
         tvShares = findViewById(R.id.tvShares)
         tvLog = findViewById(R.id.tvLog)
         scrollLog = findViewById(R.id.scrollLog)
+        btnWallet = findViewById(R.id.btnWallet)
+        walletStore = WalletStore(this)
+        btnWallet.setOnClickListener { openWallet(WalletActivity.MODE_VIEW) }
 
         etWallet.setText(prefs.wallet)
         etPass.setText(prefs.password)
@@ -162,11 +183,39 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
             }
         }
 
+        if (savedInstanceState == null) firstRunWalletPrompt()
+
         onStats("Idle", 0.0, 0, 0, 0)
         onLog("XTE Miner ready. Enter XT… wallet and tap Start. No mining until you start.")
         onLog("Algo: Chukwa (Argon2id t=3 m=512KiB p=1).")
         onLog("Default: solo mining on seednode https://${MinerPrefs.DEFAULT_SEED_HOST}:${MinerPrefs.DEFAULT_SEED_PORT}/json_rpc (TLS)")
         onLog("Alternative: pool ${MinerPrefs.DEFAULT_HOST}:${MinerPrefs.DEFAULT_PORT}. Plain daemon RPC: port ${MinerPrefs.SEED_PLAIN_PORT} with TLS off.")
+    }
+
+    private fun openWallet(mode: String) {
+        walletResult.launch(Intent(this, WalletActivity::class.java).putExtra(WalletActivity.EXTRA_MODE, mode))
+    }
+
+    /** No mining address yet: offer to create or restore a wallet, or type an address. */
+    private fun firstRunWalletPrompt() {
+        if (walletStore.hasWallet() && !walletStore.isBackedUp()) {
+            // Created earlier but the seed backup was never confirmed.
+            openWallet(WalletActivity.MODE_BACKUP)
+            return
+        }
+        if (prefs.wallet.isNotEmpty()) return
+        if (walletStore.hasWallet()) {
+            walletStore.address()?.let { etWallet.setText(it); prefs.wallet = it }
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Mining address")
+            .setMessage("Solo-mined blocks pay an XTE address. Create a new wallet on this phone (keys stay on " +
+                "the device), restore one from its 25-word seed, or enter an address yourself.")
+            .setPositiveButton("Create wallet") { _, _ -> openWallet(WalletActivity.MODE_CREATE) }
+            .setNeutralButton("Restore from seed") { _, _ -> openWallet(WalletActivity.MODE_RESTORE) }
+            .setNegativeButton("Enter address manually") { _, _ -> etWallet.requestFocus() }
+            .show()
     }
 
     private fun currentMode(): MiningMode =
@@ -205,6 +254,7 @@ class MainActivity : AppCompatActivity(), MiningEngine.StatsListener {
         etPass.isEnabled = enabled
         etThreads.isEnabled = enabled
         cbPoolTls.isEnabled = enabled
+        btnWallet.isEnabled = enabled
     }
 
     override fun onStats(status: String, hashrate: Double, accepted: Long, rejected: Long, hashes: Long) {

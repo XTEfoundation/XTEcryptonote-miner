@@ -49,8 +49,8 @@ android {
         applicationId = "com.xtefoundation.cryptonoteminer"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -128,4 +128,6 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
     testImplementation("junit:junit:4.13.2")
+    // Test-only cross-checks: Keccak-256 and Argon2id (Chukwa) reference implementations.
+    testImplementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
 }

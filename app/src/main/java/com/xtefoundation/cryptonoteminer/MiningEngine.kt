@@ -82,29 +82,28 @@ class MiningEngine(
         val tlsNote = if (poolMode && useTls) " tls" else ""
         log("Starting miner ($modeLabel): $endpoint:$port threads=$threads$tlsNote")
 
+        val h0 = try {
+            ChukwaHasher(this).also { it.start(threads) }
+        } catch (e: Exception) {
+            Log.e(TAG, "hasher start failed: ${e.javaClass.simpleName}")
+            mining = false
+            hasher = null
+            secretWallet = ""
+            secretPass = ""
+            statusText = "Failed to start miner"
+            pushStats()
+            log("Failed to start miner")
+            return false
+        }
+        hasher = h0
         if (mode == MiningMode.SEEDNODE) {
             log(
-                "Solo mode polls height and difficulty only. traaitt hashes a parent-block " +
-                    "blob (nonce at offset 39 of that blob, not of the raw template), so this " +
-                    "build does not hash or submit solo blocks. See SECURITY.md."
+                "Solo mode: getblocktemplate -> merge-mining tag root -> Chukwa over the " +
+                    "parent-block hashing blob (nonce @39) -> submitblock. Blocks pay the wallet above."
             )
-            daemon = DaemonRpcClient(this)
+            daemon = DaemonRpcClient(this) { input -> h0.hashOnce(input) }
             daemon!!.connect(endpoint, port, walletNorm)
         } else {
-            try {
-                hasher = ChukwaHasher(this)
-                hasher!!.start(threads)
-            } catch (e: Exception) {
-                Log.e(TAG, "hasher start failed: ${e.javaClass.simpleName}")
-                mining = false
-                hasher = null
-                secretWallet = ""
-                secretPass = ""
-                statusText = "Failed to start miner"
-                pushStats()
-                log("Failed to start miner")
-                return false
-            }
             stratum = StratumClient(this)
             stratum!!.connect(endpoint, port, walletNorm, passNorm, useTls = useTls)
         }
@@ -201,13 +200,22 @@ class MiningEngine(
         log("Share rejected: $reason")
     }
 
-    override fun onTemplate(jobId: String, blobHex: String, target64: Long, height: Long, difficulty: Long) {
-        // Defense in depth: never hash a raw blocktemplate_blob. Pool jobs use onJob.
-        log("Solo template ignored (h=$height diff=$difficulty)")
-        if (blobHex.length > MinerValidation.MAX_HASH_BLOB_BYTES * 2 || target64 == 0L ||
-            !MinerValidation.isJobId(jobId)
-        ) {
-            return
+    override fun onSoloJob(job: SoloJob) {
+        if (!mining || mode != MiningMode.SEEDNODE) return
+        try {
+            val blob = job.hashingBlobCopy()
+            if (blob.size < MinerValidation.MIN_BLOB_BYTES || blob.size > MinerValidation.MAX_JOB_BLOB_BYTES ||
+                job.target64 == 0L || !MinerValidation.isJobId(job.jobId)
+            ) {
+                log("Rejected solo job")
+                return
+            }
+            hasher?.setJob(blob, job.jobId, job.target64)
+            log("Solo job ${job.jobId} height=${job.height} diff=${job.difficulty} blob=${blob.size}B")
+            statusText = "Solo mining height ${job.height}"
+            pushStats()
+        } catch (e: Exception) {
+            log("Bad solo job: ${e.javaClass.simpleName}")
         }
     }
 
@@ -228,8 +236,8 @@ class MiningEngine(
         val nonceHex = String.format("%08x", nonce)
         val resultHex = MinerValidation.bytesToHex(hash)
         if (mode == MiningMode.SEEDNODE) {
-            log("Block candidate nonce=$nonceHex")
-            daemon?.submitBlock(jobId, nonce)
+            log("Solo candidate nonce=$nonceHex")
+            daemon?.submitBlock(jobId, nonce, hash)
         } else {
             log("Share found nonce=$nonceHex")
             stratum?.submit(jobId, nonceHex, resultHex)

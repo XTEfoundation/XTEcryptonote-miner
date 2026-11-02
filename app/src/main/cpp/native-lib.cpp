@@ -53,8 +53,12 @@ static uint64_t load_le64(const uint8_t *p) {
 }
 
 static bool hash_meets_target(const uint8_t hash[32], uint64_t target64) {
+    // CryptoNote difficulty compares the 256-bit hash as a little-endian integer, so the
+    // most significant 64 bits are bytes 24..31 (same convention as xmrig: hash + 24).
+    // "<=" keeps this a conservative prefilter: the Kotlin side performs the exact
+    // check_hash (hash * difficulty < 2^256) before submitting a block.
     // Explicit little-endian. Android is LE; do not rely on host endianness.
-    return load_le64(hash) < target64;
+    return load_le64(hash + 24) <= target64;
 }
 
 static bool job_id_ok(const char *s) {

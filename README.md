@@ -35,11 +35,13 @@ Sites: [traaitt.com](https://traaitt.com) · [mine.traaitt.com](https://mine.tra
 
 Solo mining talks to an XTEnetwork daemon RPC (not stratum):
 
-1. Poll `getblocktemplate` with `{ "reserve_size": 8, "wallet_address": "<XT…>" }`
-2. Response: `difficulty`, `height`, `reserved_offset`, `blocktemplate_blob`, `status`
-3. The app shows height and difficulty. It does **not** hash `blocktemplate_blob` or call `submitblock`.
+1. Poll `getblocktemplate` with `{ "reserve_size": 8, "wallet_address": "<XT…>" }` every 4 s.
+2. Parse `blocktemplate_blob` strictly and fill the merge-mining tag root with the Keccak hash of the block hashing blob, as traaitt's own miner does.
+3. Hash the parent-block hashing blob (nonce at offset 39) with Chukwa.
+4. On a hit, re-check the hash with the exact `check_hash` rule, write the nonce into the full block, and send `submitblock ["<hex>"]`. Accepted/rejected blocks are counted in the UI.
+5. New work on every height or previous-block change and every 30 s; work for an old tip is dropped.
 
-traaitt hashes a parent-block hashing blob (Chukwa / Argon2id), and the nonce lives at offset 39 of **that** blob, not of the raw template. Pool jobs already carry the hashing blob. Building it from a solo template needs a tested Keccak of the miner transaction, which this app does not ship. Details are in [`SECURITY.md`](SECURITY.md). Use pool mode to mine.
+Only v6 (Chukwa) templates are mined. The block reward goes to the wallet you entered. Solo mining at network difficulty on a phone is a lottery; use pool mode for steady payouts. Construction, test vectors, and what is still unverified: [`SECURITY.md`](SECURITY.md#solo-mining-seednode-mode).
 
 If the seednode host does not resolve or the daemon is unreachable, the app logs a DNS/RPC error and stays idle (no silent mining).
 
@@ -57,14 +59,15 @@ If the seednode host does not resolve or the daemon is unreachable, the app logs
 ### Seednode mode
 
 1. **Daemon JSON-RPC** over HTTP (`/json_rpc`) as above.
-2. Height and difficulty refresh every few seconds. The hasher is not started.
+2. Templates become `SoloJob`s (`CryptoNoteBlock.kt`, `Keccak.kt`); the same native hasher mines them.
 
 ### Hash (both modes)
 
 - Argon2id **Chukwa** via NDK + [phc-winner-argon2](https://github.com/P-H-C/phc-winner-argon2)
 - `t_cost=3`, `m_cost=512` (KiB), `parallelism=1`
 - password = full hashing blob; salt = first **16** bytes of blob; output **32** bytes
-- nonce written at hashing-blob offset **39** (4 bytes LE). That matches pool jobs. It is not the offset of the nonce inside a raw v6 `blocktemplate_blob`.
+- nonce written at hashing-blob offset **39** (4 bytes LE), for pool jobs and solo jobs alike. In the full solo block the nonce sits inside the parent block (offset 73 for a typical template); the app writes it there for `submitblock`.
+- target check uses hash bytes 24–31 (the most significant 64 bits, as xmrig does).
 - Multi-threaded native workers; UI shows hashrate, accepted/rejected, status.
 
 > Note: Pool mode is **not** Bitcoin `mining.subscribe` stratum. XTE’s pool software uses the Cryptonote login protocol (same family as [TRRXITTE/xte-cryptonote-nodejs-pool](https://github.com/TRRXITTE/xte-cryptonote-nodejs-pool)).
